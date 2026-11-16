@@ -10,6 +10,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -33,7 +34,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
@@ -153,21 +156,26 @@ private fun NoteScreenContent(
     val listState = rememberLazyListState()
     val density = LocalDensity.current
     val slideThresholdPx = with(density) { 80.dp.toPx() }
+    // 声波按钮点击热区（按钮 44dp + 间距 8dp），短按落在这里视为「语音待命」
+    val waveZonePx = with(density) { 56.dp.toPx() }
 
     var notes by remember { mutableStateOf(noteStore.all()) }
     var draft by remember { mutableStateOf("") }
     // 默认语音模式：输入栏是纯文本按钮，不含可聚焦的 EditText，长按绝不会弹键盘。
-    // 短按才切到打字模式，换成真正的 TextField 并聚焦。
+    // 短按文字区切到打字模式；点左侧声波按钮进入「语音待命」，占位文字变「按住说话」。
     var textMode by remember { mutableStateOf(false) }
+    var voiceArmed by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("点按输入框打字，或按住输入栏说话") }
     var recording by remember { mutableStateOf(false) }
     var slideMode by remember { mutableStateOf(SlideMode.CENTER) }
     var liveText by remember { mutableStateOf("") }
     var elapsedSec by remember { mutableStateOf(0) }
     var busy by remember { mutableStateOf(false) }
-    var showSettings by remember { mutableStateOf(settingsStore.apiKey.isBlank()) }
+    var showSettings by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<Note?>(null) }
     var pendingEdit by remember { mutableStateOf<Note?>(null) }
+    var confirmClear by remember { mutableStateOf(false) }
+    var dataStats by remember { mutableStateOf(noteStore.stats()) }
     var editText by remember { mutableStateOf("") }
     // 「编辑」模式松手后暂存的语音文件，用户点发送时一并入库
     var pendingAudio by remember { mutableStateOf<Pair<String, Long>?>(null) }
@@ -200,6 +208,11 @@ private fun NoteScreenContent(
         keyboardController?.hide()
     }
 
+    fun refreshData() {
+        notes = noteStore.all()
+        dataStats = noteStore.stats()
+    }
+
     // 切到打字模式时，等 TextField 组合完成后再聚焦并弹键盘
     LaunchedEffect(textMode) {
         if (textMode) {
@@ -208,8 +221,12 @@ private fun NoteScreenContent(
         }
     }
 
-    // 打字模式下按系统返回键：先收键盘退回语音模式，而不是直接退出 App
-    BackHandler(enabled = textMode) {
+    // 返回键优先级：设置页 > 打字模式 >（不拦截，交给系统退出）
+    BackHandler(enabled = showSettings) {
+        showSettings = false
+        refreshData()
+    }
+    BackHandler(enabled = !showSettings && textMode) {
         exitTextMode()
     }
 
@@ -387,6 +404,8 @@ private fun NoteScreenContent(
                         apiKeyInput = settingsStore.apiKey
                         workspaceInput = settingsStore.workspaceId
                         modelInput = settingsStore.model
+                        dataStats = noteStore.stats()
+                        exitTextMode()
                         showSettings = true
                     }) {
                         Icon(Icons.Default.Settings, contentDescription = "设置", tint = textColor)
@@ -404,7 +423,11 @@ private fun NoteScreenContent(
         ) {
             if (notes.isEmpty()) {
                 Column(
-                    modifier = Modifier.align(Alignment.Center),
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .pointerInput(textMode) {
+                            detectTapGestures { if (textMode) exitTextMode() }
+                        },
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     WaveGlyph(color = Accent.copy(alpha = 0.6f), modifier = Modifier.size(48.dp))
@@ -417,7 +440,11 @@ private fun NoteScreenContent(
                 LazyColumn(
                     state = listState,
                     reverseLayout = true,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(textMode) {
+                            detectTapGestures { if (textMode) exitTextMode() }
+                        },
                     contentPadding = PaddingValues(top = 12.dp, bottom = 116.dp),
                 ) {
                     items(notes.asReversed(), key = { it.id }) { note ->
@@ -472,9 +499,15 @@ private fun NoteScreenContent(
                     // 否则手势会在 Initial 阶段消费 down，导致收起按钮/光标点击全部失效。
                     val recordModifier = recordGesture(
                         thresholdPx = slideThresholdPx,
-                        onTap = {
-                            // 短按（仅语音模式）：切到打字模式，由 LaunchedEffect 聚焦并弹键盘
-                            textMode = true
+                        onTap = { x ->
+                            // 点左侧声波按钮：进入「语音待命」，占位文字变「按住说话」
+                            if (x <= waveZonePx) {
+                                voiceArmed = true
+                                status = "已就绪 · 按住输入栏说话"
+                            } else {
+                                // 点文字区：切到打字模式，由 LaunchedEffect 聚焦并弹键盘
+                                textMode = true
+                            }
                         },
                         onStart = {
                             // 长按：开始录音
@@ -543,7 +576,9 @@ private fun NoteScreenContent(
                                 contentAlignment = Alignment.CenterStart,
                             ) {
                                 Text(
-                                    text = if (draft.isBlank()) "按住说话 · 点此打字" else draft,
+                                    text = if (draft.isBlank()) {
+                                        if (voiceArmed) "按住说话" else "按住说话 · 点此打字"
+                                    } else draft,
                                     fontSize = 14.sp,
                                     color = if (draft.isBlank()) subColor else textColor,
                                     maxLines = 1,
@@ -576,29 +611,6 @@ private fun NoteScreenContent(
                 )
             }
         }
-    }
-
-    // 设置
-    if (showSettings) {
-        SettingsDialog(
-            apiKeyInput = apiKeyInput,
-            workspaceInput = workspaceInput,
-            modelInput = modelInput,
-            theme = theme,
-            onApiKeyChange = { apiKeyInput = it },
-            onWorkspaceChange = { workspaceInput = it },
-            onModelChange = { modelInput = it },
-            onThemeChange = onThemeChange,
-            canDismiss = settingsStore.apiKey.isNotBlank(),
-            onDismiss = { showSettings = false },
-            onSave = {
-                settingsStore.apiKey = apiKeyInput.trim()
-                settingsStore.workspaceId = workspaceInput.trim()
-                settingsStore.model = modelInput.trim().ifBlank { SettingsStore.DEFAULT_MODEL }
-                showSettings = false
-                status = "设置已保存"
-            },
-        )
     }
 
     // 再次编辑
@@ -661,6 +673,57 @@ private fun NoteScreenContent(
             dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } },
         )
     }
+
+    // 全屏设置页（非弹窗）
+    if (showSettings) {
+        SettingsPage(
+            dark = dark,
+            apiKeyInput = apiKeyInput,
+            workspaceInput = workspaceInput,
+            modelInput = modelInput,
+            theme = theme,
+            stats = dataStats,
+            onApiKeyChange = { apiKeyInput = it },
+            onWorkspaceChange = { workspaceInput = it },
+            onModelChange = { modelInput = it },
+            onThemeChange = onThemeChange,
+            onBack = { showSettings = false },
+            onSave = {
+                settingsStore.apiKey = apiKeyInput.trim()
+                settingsStore.workspaceId = workspaceInput.trim()
+                settingsStore.model = modelInput.trim().ifBlank { SettingsStore.DEFAULT_MODEL }
+                showSettings = false
+                status = "设置已保存"
+            },
+            onClearAll = { confirmClear = true },
+            onClearAudio = {
+                noteStore.clearAudioOnly()
+                refreshData()
+                Toast.makeText(context, "已清除语音文件，文字记录保留", Toast.LENGTH_SHORT).show()
+            },
+        )
+    }
+
+    // 清空全部数据确认（设置页内的二次确认）
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text("清空全部数据？") },
+            text = { Text("将删除全部 ${dataStats.noteCount} 条记录和所有本地语音文件，且不可恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    noteStore.clearAll()
+                    confirmClear = false
+                    showSettings = false
+                    playingPath?.let { audioPlayer.stop() }
+                    playingPath = null
+                    refreshData()
+                    Toast.makeText(context, "已清空全部数据", Toast.LENGTH_SHORT).show()
+                }) { Text("确认清空", color = Color(0xFFE64340)) }
+            },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("取消") } },
+        )
+    }
 }
 
 /**
@@ -672,7 +735,7 @@ private fun NoteScreenContent(
 @Composable
 private fun recordGesture(
     thresholdPx: Float,
-    onTap: () -> Unit,
+    onTap: (x: Float) -> Unit,
     onStart: () -> Unit,
     onSlideModeChange: (SlideMode) -> Unit,
     onEnd: (SlideMode) -> Unit,
@@ -726,48 +789,102 @@ private fun recordGesture(
                 }
             }
         }
-        if (longPressed) onEnd(mode) else onTap()
+        if (longPressed) onEnd(mode) else onTap(downX)
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsDialog(
+private fun SettingsPage(
+    dark: Boolean,
     apiKeyInput: String,
     workspaceInput: String,
     modelInput: String,
     theme: String,
+    stats: com.liweiwen.voicenotes.data.StorageStats,
     onApiKeyChange: (String) -> Unit,
     onWorkspaceChange: (String) -> Unit,
     onModelChange: (String) -> Unit,
     onThemeChange: (String) -> Unit,
-    canDismiss: Boolean,
-    onDismiss: () -> Unit,
+    onBack: () -> Unit,
     onSave: () -> Unit,
+    onClearAll: () -> Unit,
+    onClearAudio: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = { if (canDismiss) onDismiss() },
-        title = { Text("设置") },
-        text = {
-            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    "录音保存为本机 WAV 文件，不需要存储权限；仅转写时把音频流式发给百炼。API Key 只存本机。",
-                    fontSize = 12.sp,
-                    color = Color(0xFF999999),
-                )
-                Spacer(Modifier.height(12.dp))
-                Text("外观", fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                Spacer(Modifier.height(4.dp))
+    val surface = if (dark) SurfaceDark else SurfaceLight
+    val background = if (dark) BgDark else BgLight
+    val textColor = if (dark) Color(0xFFECECEC) else Color(0xFF222222)
+    val subColor = if (dark) Color(0xFF8A8A8A) else Color(0xFF999999)
+    val cardBg = if (dark) InputDark else Color.White
+
+    Scaffold(
+        containerColor = background,
+        topBar = {
+            TopAppBar(
+                title = { Text("设置", fontSize = 18.sp, fontWeight = FontWeight.Medium) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = textColor)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = surface, titleContentColor = textColor),
+            )
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+            // 数据管理
+            SettingsSection(title = "数据管理") {
+                CardBox(cardBg) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
+                    ) {
+                        StatItem("记录", "${stats.noteCount} 条", textColor)
+                        StatItem("语音", "${stats.audioCount} 个", textColor)
+                        StatItem("占用", formatBytes(stats.audioBytes), textColor)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                TextButton(onClick = onClearAudio) {
+                    Text("清除语音文件（保留文字）", color = if (dark) Color(0xFFE8B04B) else Color(0xFFB8860B))
+                }
+                TextButton(onClick = onClearAll) {
+                    Text("清空全部数据", color = Color(0xFFE64340))
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // 外观
+            SettingsSection(title = "外观") {
                 Row {
                     listOf("system" to "跟随系统", "dark" to "深色", "light" to "浅色").forEach { (value, label) ->
                         TextButton(onClick = { onThemeChange(value) }) {
                             Text(
                                 label,
-                                color = if (theme == value) Accent else Color(0xFF999999),
+                                color = if (theme == value) Accent else subColor,
                                 fontWeight = if (theme == value) FontWeight.Bold else FontWeight.Normal,
                             )
                         }
                     }
                 }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // 语音转写
+            SettingsSection(title = "语音转写") {
+                Text(
+                    "录音保存为本机 WAV 文件，不需要存储权限；仅转写时把音频流式发给百炼。API Key 只存本机。",
+                    fontSize = 12.sp,
+                    color = subColor,
+                )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = apiKeyInput,
@@ -793,10 +910,50 @@ private fun SettingsDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-        },
-        confirmButton = { TextButton(onClick = onSave) { Text("保存") } },
-        dismissButton = if (canDismiss) {
-            { TextButton(onClick = onDismiss) { Text("取消") } }
-        } else null,
-    )
+
+            Spacer(Modifier.height(20.dp))
+            androidx.compose.material3.Button(
+                onClick = onSave,
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Accent),
+            ) {
+                Text("保存设置", color = Color.White, fontSize = 16.sp)
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun SettingsSection(title: String, content: @Composable () -> Unit) {
+    Column {
+        Text(title, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Accent)
+        Spacer(Modifier.height(8.dp))
+        content()
+    }
+}
+
+@Composable
+private fun CardBox(bg: Color, content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(bg),
+    ) { content() }
+}
+
+@Composable
+private fun StatItem(label: String, value: String, color: Color) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = color)
+        Spacer(Modifier.height(2.dp))
+        Text(label, fontSize = 12.sp, color = Color(0xFF999999))
+    }
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024f)
+    else -> "%.1f MB".format(bytes / (1024f * 1024f))
 }

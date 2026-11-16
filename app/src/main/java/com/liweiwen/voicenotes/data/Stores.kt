@@ -67,6 +67,30 @@ class NoteStore(context: Context) {
 
     fun newAudioFile(): File = File(audioDir, "${UUID.randomUUID()}.wav")
 
+    /** 数据管理统计：记录条数、语音文件数、语音占用字节数。 */
+    fun stats(): StorageStats {
+        val wavs = audioDir.listFiles { f -> f.isFile && f.name.endsWith(".wav", true) }
+        val count = wavs?.size ?: 0
+        val bytes = wavs?.sumOf { it.length() } ?: 0L
+        return StorageStats(notes.size, count, bytes)
+    }
+
+    /** 清空全部记录及其语音文件（不可撤销）。 */
+    fun clearAll() {
+        audioDir.listFiles { f -> f.isFile }?.forEach { runCatching { it.delete() } }
+        notes.clear()
+        save()
+    }
+
+    /** 只删除所有语音文件但保留文字记录（不可撤销）。 */
+    fun clearAudioOnly() {
+        audioDir.listFiles { f -> f.isFile }?.forEach { runCatching { it.delete() } }
+        notes.forEachIndexed { i, note ->
+            if (note.hasAudio) notes[i] = note.copy(audioPath = null, durationMs = 0L)
+        }
+        save()
+    }
+
     private fun load() {
         if (!file.exists()) return
         try {
@@ -105,6 +129,9 @@ class NoteStore(context: Context) {
         file.writeText(array.toString())
     }
 }
+
+/** 数据管理统计结果。 */
+data class StorageStats(val noteCount: Int, val audioCount: Int, val audioBytes: Long)
 
 /** 设置只写入本机 SharedPreferences。 */
 class SettingsStore(context: Context) {

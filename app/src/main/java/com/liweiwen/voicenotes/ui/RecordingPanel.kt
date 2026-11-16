@@ -97,7 +97,7 @@ fun RecordingPanel(mode: SlideMode, liveText: String, elapsedSec: Int, dark: Boo
                     bg = buttonBg,
                 )
                 SlideButton(
-                    label = "编辑",
+                    label = "语音转文字",
                     active = mode == SlideMode.EDIT,
                     activeColor = Color(0xFF07C160),
                     bg = buttonBg,
@@ -147,7 +147,7 @@ fun RecordingPanel(mode: SlideMode, liveText: String, elapsedSec: Int, dark: Boo
 private fun SlideButton(label: String, active: Boolean, activeColor: Color, bg: Color) {
     Box(
         modifier = Modifier
-            .width(112.dp)
+            .width(132.dp)
             .height(56.dp)
             .clip(RoundedCornerShape(28.dp))
             .background(if (active) activeColor else bg),
