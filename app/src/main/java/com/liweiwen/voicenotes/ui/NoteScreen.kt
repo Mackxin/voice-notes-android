@@ -3,6 +3,7 @@ package com.liweiwen.voicenotes.ui
 import android.Manifest
 import android.content.pm.PackageManager
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -10,6 +11,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -30,6 +33,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -71,6 +76,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -187,12 +193,24 @@ private fun NoteScreenContent(
         status = if (granted) "已获得麦克风权限，按住输入栏说话" else "需要麦克风权限才能录音"
     }
 
+    /** 退出打字模式：收起键盘、清除焦点，回到语音模式。返回键/Done 键/收起按钮均走这里。 */
+    fun exitTextMode() {
+        textMode = false
+        focusManager.clearFocus()
+        keyboardController?.hide()
+    }
+
     // 切到打字模式时，等 TextField 组合完成后再聚焦并弹键盘
     LaunchedEffect(textMode) {
         if (textMode) {
             clipFocusRequester.requestFocus()
             keyboardController?.show()
         }
+    }
+
+    // 打字模式下按系统返回键：先收键盘退回语音模式，而不是直接退出 App
+    BackHandler(enabled = textMode) {
+        exitTextMode()
     }
 
     // 录音计时
@@ -220,9 +238,7 @@ private fun NoteScreenContent(
         saveNote(draft, audio != null, audio?.first, audio?.second ?: 0L)
         draft = ""
         pendingAudio = null
-        textMode = false
-        focusManager.clearFocus()
-        keyboardController?.hide()
+        exitTextMode()
         status = "已记下"
     }
 
@@ -452,29 +468,26 @@ private fun NoteScreenContent(
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // 手势只覆盖「声波按钮 + 输入区」，发送按钮独立在外，避免被拦截
+                    // 录音手势：仅语音模式套用。打字模式让 TextField 独占触摸，
+                    // 否则手势会在 Initial 阶段消费 down，导致收起按钮/光标点击全部失效。
+                    val recordModifier = recordGesture(
+                        thresholdPx = slideThresholdPx,
+                        onTap = {
+                            // 短按（仅语音模式）：切到打字模式，由 LaunchedEffect 聚焦并弹键盘
+                            textMode = true
+                        },
+                        onStart = {
+                            // 长按：开始录音
+                            finishJob?.cancel()
+                            finishJob = scope.launch { startRecording() }
+                        },
+                        onSlideModeChange = { slideMode = it },
+                        onEnd = { mode -> finishJob = scope.launch { stopRecording(mode) } },
+                    )
                     Row(
                         modifier = Modifier
                             .weight(1f)
-                            .then(
-                                recordGesture(
-                                    thresholdPx = slideThresholdPx,
-                                    onTap = {
-                                        // 短按：切到打字模式，由 LaunchedEffect 聚焦并弹键盘
-                                        textMode = true
-                                    },
-                                    onStart = {
-                                        // 长按：收起键盘、退出打字模式，再开始录音
-                                        textMode = false
-                                        focusManager.clearFocus()
-                                        keyboardController?.hide()
-                                        finishJob?.cancel()
-                                        finishJob = scope.launch { startRecording() }
-                                    },
-                                    onSlideModeChange = { slideMode = it },
-                                    onEnd = { mode -> finishJob = scope.launch { stopRecording(mode) } },
-                                ),
-                            ),
+                            .then(if (textMode) Modifier else recordModifier),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         // 图2 第一个按钮：声波图标
@@ -489,7 +502,7 @@ private fun NoteScreenContent(
                         }
                         Spacer(Modifier.width(8.dp))
                         if (textMode) {
-                            // 打字模式：真正的 TextField，长按手势此时不会误触（键盘已在，长按用于录音）
+                            // 打字模式：真正的 TextField，回车键 Done 直接收起键盘退回语音模式
                             TextField(
                                 value = draft,
                                 onValueChange = { draft = it },
@@ -499,6 +512,14 @@ private fun NoteScreenContent(
                                     .focusRequester(clipFocusRequester),
                                 placeholder = { Text("输入文字…", fontSize = 14.sp, color = subColor, maxLines = 1) },
                                 singleLine = true,
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                keyboardActions = KeyboardActions(onDone = { exitTextMode() }),
+                                trailingIcon = {
+                                    // 收起键盘按钮：点击退出打字模式，回到语音模式
+                                    IconButton(onClick = { exitTextMode() }) {
+                                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "收起键盘", tint = subColor)
+                                    }
+                                },
                                 colors = TextFieldDefaults.colors(
                                     focusedContainerColor = inputBg,
                                     unfocusedContainerColor = inputBg,
