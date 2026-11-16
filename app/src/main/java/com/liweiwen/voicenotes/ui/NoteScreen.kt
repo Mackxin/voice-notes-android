@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -500,12 +501,20 @@ private fun NoteScreenContent(
                     val recordModifier = recordGesture(
                         thresholdPx = slideThresholdPx,
                         onTap = { x ->
-                            // 点左侧声波按钮：进入「语音待命」，占位文字变「按住说话」
+                            // 点左侧声波按钮：来回切换状态
                             if (x <= waveZonePx) {
-                                voiceArmed = true
-                                status = "已就绪 · 按住输入栏说话"
+                                if (voiceArmed) {
+                                    // 已在语音待命 → 切到打字模式
+                                    voiceArmed = false
+                                    textMode = true
+                                } else {
+                                    // 进入语音待命，占位文字变「按住说话」
+                                    voiceArmed = true
+                                    status = "已就绪 · 按住输入栏说话"
+                                }
                             } else {
                                 // 点文字区：切到打字模式，由 LaunchedEffect 聚焦并弹键盘
+                                voiceArmed = false
                                 textMode = true
                             }
                         },
@@ -523,12 +532,19 @@ private fun NoteScreenContent(
                             .then(if (textMode) Modifier else recordModifier),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        // 图2 第一个按钮：声波图标
+                        // 左下角声波按钮：语音模式下由手势处理短按；打字模式下独立点击切回语音待命
                         Box(
                             modifier = Modifier
                                 .size(44.dp)
                                 .clip(CircleShape)
-                                .background(inputBg),
+                                .background(inputBg)
+                                .then(
+                                    if (textMode) Modifier.clickable {
+                                        exitTextMode()
+                                        voiceArmed = true
+                                        status = "语音模式 · 按住输入栏说话"
+                                    } else Modifier
+                                ),
                             contentAlignment = Alignment.Center,
                         ) {
                             WaveGlyph(color = Accent, modifier = Modifier.size(24.dp))
@@ -683,6 +699,10 @@ private fun NoteScreenContent(
             modelInput = modelInput,
             theme = theme,
             stats = dataStats,
+            notes = notes,
+            notesFilePath = noteStore.notesFilePath,
+            recordingsDirPath = noteStore.recordingsDirPath,
+            onRefresh = { refreshData() },
             onApiKeyChange = { apiKeyInput = it },
             onWorkspaceChange = { workspaceInput = it },
             onModelChange = { modelInput = it },
@@ -802,6 +822,10 @@ private fun SettingsPage(
     modelInput: String,
     theme: String,
     stats: com.liweiwen.voicenotes.data.StorageStats,
+    notes: List<com.liweiwen.voicenotes.data.Note>,
+    notesFilePath: String,
+    recordingsDirPath: String,
+    onRefresh: () -> Unit,
     onApiKeyChange: (String) -> Unit,
     onWorkspaceChange: (String) -> Unit,
     onModelChange: (String) -> Unit,
@@ -850,7 +874,37 @@ private fun SettingsPage(
                         StatItem("占用", formatBytes(stats.audioBytes), textColor)
                     }
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("本机数据", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = textColor)
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = onRefresh) { Text("刷新", fontSize = 12.sp) }
+                }
+                // 本机存储路径
+                CardBox(cardBg) {
+                    Column(Modifier.padding(12.dp)) {
+                        PathLine("记录文件", notesFilePath, subColor, textColor)
+                        Spacer(Modifier.height(6.dp))
+                        PathLine("语音目录", recordingsDirPath, subColor, textColor)
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                // 实时记录列表（最近 20 条）
+                if (notes.isEmpty()) {
+                    Text("暂无本地记录", fontSize = 12.sp, color = subColor, modifier = Modifier.padding(vertical = 6.dp))
+                } else {
+                    CardBox(cardBg) {
+                        Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                            notes.take(20).forEach { note ->
+                                DataRow(note, textColor, subColor)
+                            }
+                            if (notes.size > 20) {
+                                Text("…还有 ${notes.size - 20} 条", fontSize = 11.sp, color = subColor, modifier = Modifier.padding(vertical = 4.dp))
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
                 TextButton(onClick = onClearAudio) {
                     Text("清除语音文件（保留文字）", color = if (dark) Color(0xFFE8B04B) else Color(0xFFB8860B))
                 }
@@ -950,6 +1004,46 @@ private fun StatItem(label: String, value: String, color: Color) {
         Spacer(Modifier.height(2.dp))
         Text(label, fontSize = 12.sp, color = Color(0xFF999999))
     }
+}
+
+@Composable
+private fun PathLine(label: String, path: String, subColor: Color, textColor: Color) {
+    Column {
+        Text(label, fontSize = 11.sp, color = subColor)
+        Text(path, fontSize = 10.sp, color = textColor)
+    }
+}
+
+@Composable
+private fun DataRow(note: com.liweiwen.voicenotes.data.Note, textColor: Color, subColor: Color) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                note.text.take(28) + if (note.text.length > 28) "…" else "",
+                fontSize = 12.sp,
+                color = textColor,
+                maxLines = 1,
+            )
+            Text(
+                formatRecordTime(note.time) + if (note.hasAudio) " · 语音 ${formatDuration(note.durationMs)}" else " · 文字",
+                fontSize = 10.sp,
+                color = subColor,
+            )
+        }
+    }
+}
+
+private fun formatRecordTime(time: Long): String {
+    val d = java.util.Date(time)
+    return java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(d)
+}
+
+private fun formatDuration(ms: Long): String {
+    val sec = ms / 1000
+    return "%d:%02d".format(sec / 60, sec % 60)
 }
 
 private fun formatBytes(bytes: Long): String = when {

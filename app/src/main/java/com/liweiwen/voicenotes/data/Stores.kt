@@ -24,6 +24,10 @@ class NoteStore(context: Context) {
     val audioDir = File(context.filesDir, "recordings").apply { mkdirs() }
     private val notes = mutableListOf<Note>()
 
+    /** 设置页展示用的本机存储路径 */
+    val notesFilePath: String get() = file.absolutePath
+    val recordingsDirPath: String get() = audioDir.absolutePath
+
     init {
         load()
     }
