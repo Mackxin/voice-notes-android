@@ -1,7 +1,9 @@
 package com.liweiwen.voicenotes.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -36,10 +38,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -84,6 +89,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.liweiwen.voicenotes.asr.AsrResult
 import com.liweiwen.voicenotes.asr.DashScopeAsr
 import com.liweiwen.voicenotes.audio.AudioPlayer
@@ -91,6 +97,7 @@ import com.liweiwen.voicenotes.audio.PcmRecorder
 import com.liweiwen.voicenotes.data.Note
 import com.liweiwen.voicenotes.data.NoteStore
 import com.liweiwen.voicenotes.data.SettingsStore
+import com.liweiwen.voicenotes.data.VoiceNotesDocumentsProvider
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -153,6 +160,7 @@ private fun NoteScreenContent(
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val clipFocusRequester = remember { FocusRequester() }
+    val searchFocusRequester = remember { FocusRequester() }
     val clipboard = LocalClipboardManager.current
     val listState = rememberLazyListState()
     val density = LocalDensity.current
@@ -166,13 +174,15 @@ private fun NoteScreenContent(
     // 短按文字区切到打字模式；点左侧声波按钮进入「语音待命」，占位文字变「按住说话」。
     var textMode by remember { mutableStateOf(false) }
     var voiceArmed by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("点按输入框打字，或按住输入栏说话") }
+    var status by remember { mutableStateOf("") }
     var recording by remember { mutableStateOf(false) }
     var slideMode by remember { mutableStateOf(SlideMode.CENTER) }
     var liveText by remember { mutableStateOf("") }
     var elapsedSec by remember { mutableStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var searchOpen by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<Note?>(null) }
     var pendingEdit by remember { mutableStateOf<Note?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
@@ -185,6 +195,18 @@ private fun NoteScreenContent(
     val asrRef = remember { mutableStateOf<DashScopeAsr?>(null) }
     var currentAudioFile by remember { mutableStateOf<File?>(null) }
     var finishJob by remember { mutableStateOf<Job?>(null) }
+
+    // 全局搜索：匹配记录正文、语音标记与显示时间
+    val keyword = searchQuery.trim()
+    val visibleNotes = if (keyword.isBlank()) {
+        notes
+    } else {
+        notes.filter { note ->
+            note.text.contains(keyword, ignoreCase = true) ||
+                (note.hasAudio && "语音".contains(keyword, ignoreCase = true)) ||
+                formatRecordTime(note.time).contains(keyword, ignoreCase = true)
+        }
+    }
 
     val audioPlayer = remember { AudioPlayer() }
     var playingPath by remember { mutableStateOf<String?>(null) }
@@ -214,6 +236,43 @@ private fun NoteScreenContent(
         dataStats = noteStore.stats()
     }
 
+    /** 点击设置页的本机路径，直达系统文件应用里的「随手说本机数据」目录。 */
+    fun openPath(path: String, directory: Boolean) {
+        val target = File(path)
+        if (!target.exists()) {
+            Toast.makeText(context, "文件不存在或已被清理", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val docId = if (directory) {
+            VoiceNotesDocumentsProvider.DOC_RECORDINGS
+        } else {
+            VoiceNotesDocumentsProvider.DOC_NOTES
+        }
+        val docUri = DocumentsContract.buildDocumentUri(VoiceNotesDocumentsProvider.AUTHORITY, docId)
+        val docIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = if (directory) "*/*" else "text/plain"
+            putExtra(DocumentsContract.EXTRA_INITIAL_URI, docUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val opened = runCatching { context.startActivity(docIntent) }.isSuccess
+        if (!opened) {
+            // 兜底：少数设备没有实现 EXTRA_INITIAL_URI，退化为普通文件分享
+            val uri = runCatching {
+                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", target)
+            }.getOrNull() ?: return
+            val fallback = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, if (directory) "resource/folder" else "*/*")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            runCatching { context.startActivity(fallback) }.onFailure {
+                Toast.makeText(context, "没有可用的文件应用，路径：$path", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     // 切到打字模式时，等 TextField 组合完成后再聚焦并弹键盘
     LaunchedEffect(textMode) {
         if (textMode) {
@@ -222,12 +281,20 @@ private fun NoteScreenContent(
         }
     }
 
-    // 返回键优先级：设置页 > 打字模式 >（不拦截，交给系统退出）
+    LaunchedEffect(searchOpen) {
+        if (searchOpen) searchFocusRequester.requestFocus()
+    }
+
+    // 返回键优先级：设置页 > 搜索 > 打字模式 >（不拦截，交给系统退出）
     BackHandler(enabled = showSettings) {
         showSettings = false
         refreshData()
     }
-    BackHandler(enabled = !showSettings && textMode) {
+    BackHandler(enabled = !showSettings && searchOpen) {
+        searchOpen = false
+        searchQuery = ""
+    }
+    BackHandler(enabled = !showSettings && !searchOpen && textMode) {
         exitTextMode()
     }
 
@@ -320,9 +387,9 @@ private fun NoteScreenContent(
         recorderRef.value = recorder
         busy = false
         status = if (connected) {
-            "正在听… 滑到「取消」丢弃，滑到「编辑」改字"
+            "正在录音 · 右滑转文字，左滑取消"
         } else {
-            "转写服务不可用，本次只保存语音"
+            "正在录音 · 右滑可试转文字（当前未连接）"
         }
     }
 
@@ -343,6 +410,18 @@ private fun NoteScreenContent(
             recording = false
             liveText = ""
             status = "已取消，语音未保存"
+            return
+        }
+
+        if (mode == SlideMode.CENTER) {
+            // 语音待命下原地松手：只保存语音文件，不做识别
+            asr?.cancel()
+            saveNote("", true, wavFile?.absolutePath, duration)
+            recording = false
+            busy = false
+            status = "语音已保存到本机"
+            liveText = ""
+            elapsedSec = 0
             return
         }
 
@@ -391,7 +470,6 @@ private fun NoteScreenContent(
 
     val surface = if (dark) SurfaceDark else SurfaceLight
     val background = if (dark) BgDark else BgLight
-    val inputBg = if (dark) InputDark else Color.White
     val textColor = if (dark) Color(0xFFECECEC) else Color(0xFF222222)
     val subColor = if (dark) Color(0xFF8A8A8A) else Color(0xFF999999)
 
@@ -399,14 +477,57 @@ private fun NoteScreenContent(
         containerColor = background,
         topBar = {
             TopAppBar(
-                title = { Text("随手说", fontSize = 18.sp, fontWeight = FontWeight.Medium) },
+                title = {
+                    if (searchOpen) {
+                        TextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .focusRequester(searchFocusRequester),
+                            placeholder = { Text("搜索记录内容", fontSize = 14.sp, color = subColor) },
+                            singleLine = true,
+                            trailingIcon = {
+                                Row {
+                                    if (searchQuery.isNotBlank()) {
+                                        IconButton(onClick = { searchQuery = "" }) {
+                                            Icon(Icons.Default.Close, contentDescription = "清空搜索", tint = subColor)
+                                        }
+                                    }
+                                    IconButton(onClick = { searchOpen = false; searchQuery = "" }) {
+                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "退出搜索", tint = subColor)
+                                    }
+                                }
+                            },
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                cursorColor = Accent,
+                                focusedTextColor = textColor,
+                                unfocusedTextColor = textColor,
+                            ),
+                        )
+                    } else {
+                        Text("随手说", fontSize = 18.sp, fontWeight = FontWeight.Medium)
+                    }
+                },
                 actions = {
+                    if (!searchOpen) {
+                        IconButton(onClick = { searchOpen = true }) {
+                            Icon(Icons.Default.Search, contentDescription = "搜索记录", tint = textColor)
+                        }
+                    }
                     IconButton(onClick = {
                         apiKeyInput = settingsStore.apiKey
                         workspaceInput = settingsStore.workspaceId
                         modelInput = settingsStore.model
                         dataStats = noteStore.stats()
                         exitTextMode()
+                        searchOpen = false
+                        searchQuery = ""
                         showSettings = true
                     }) {
                         Icon(Icons.Default.Settings, contentDescription = "设置", tint = textColor)
@@ -422,7 +543,7 @@ private fun NoteScreenContent(
                 .fillMaxSize()
                 .background(background),
         ) {
-            if (notes.isEmpty()) {
+            if (visibleNotes.isEmpty()) {
                 Column(
                     modifier = Modifier
                         .align(Alignment.Center)
@@ -433,9 +554,17 @@ private fun NoteScreenContent(
                 ) {
                     WaveGlyph(color = Accent.copy(alpha = 0.6f), modifier = Modifier.size(48.dp))
                     Spacer(Modifier.height(14.dp))
-                    Text("按住输入栏，说话即记录", fontSize = 16.sp, color = textColor)
+                    Text(
+                        if (keyword.isBlank()) "按住输入栏，说话即记录" else "没有找到匹配的记录",
+                        fontSize = 16.sp,
+                        color = textColor,
+                    )
                     Spacer(Modifier.height(6.dp))
-                    Text("语音与文字都保存在本机", fontSize = 12.sp, color = subColor)
+                    Text(
+                        if (keyword.isBlank()) "语音与文字都保存在本机" else "换个关键词试试，共 ${notes.size} 条记录",
+                        fontSize = 12.sp,
+                        color = subColor,
+                    )
                 }
             } else {
                 LazyColumn(
@@ -448,7 +577,7 @@ private fun NoteScreenContent(
                         },
                     contentPadding = PaddingValues(top = 12.dp, bottom = 116.dp),
                 ) {
-                    items(notes.asReversed(), key = { it.id }) { note ->
+                    items(visibleNotes.asReversed(), key = { it.id }) { note ->
                         NoteBubble(
                             note = note,
                             dark = dark,
@@ -477,23 +606,25 @@ private fun NoteScreenContent(
                 }
             }
 
-            // 底部输入栏
+            // 底部输入栏：胶囊输入区 + 柔和状态提示，默认文字只显示「点此打字」
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .background(surface),
             ) {
-                Text(
-                    if (pendingAudio != null) "待保存的语音 · 输入文字后点发送" else status,
-                    fontSize = 11.sp,
-                    color = subColor,
-                    modifier = Modifier.padding(start = 14.dp, top = 5.dp),
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(if (dark) Color(0x1AFFFFFF) else Color(0x12000000)),
                 )
+                val pillBg = if (dark) Color(0xFF292929) else Color(0xFFF1F1F1)
+                val waveCircleBg = Accent.copy(alpha = if (dark) 0.14f else 0.10f)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     // 录音手势：仅语音模式套用。打字模式让 TextField 独占触摸，
@@ -501,25 +632,24 @@ private fun NoteScreenContent(
                     val recordModifier = recordGesture(
                         thresholdPx = slideThresholdPx,
                         onTap = { x ->
-                            // 点左侧声波按钮：来回切换状态
                             if (x <= waveZonePx) {
+                                // 点左下角声波按钮：语音待命 ⇄ 打字模式，来回切换
+                                voiceArmed = !voiceArmed
                                 if (voiceArmed) {
-                                    // 已在语音待命 → 切到打字模式
-                                    voiceArmed = false
-                                    textMode = true
+                                    textMode = false
+                                    status = "按住输入栏，松手保存语音"
                                 } else {
-                                    // 进入语音待命，占位文字变「按住说话」
-                                    voiceArmed = true
-                                    status = "已就绪 · 按住输入栏说话"
+                                    textMode = true
+                                    status = ""
                                 }
                             } else {
                                 // 点文字区：切到打字模式，由 LaunchedEffect 聚焦并弹键盘
                                 voiceArmed = false
                                 textMode = true
+                                status = ""
                             }
                         },
                         onStart = {
-                            // 长按：开始录音
                             finishJob?.cancel()
                             finishJob = scope.launch { startRecording() }
                         },
@@ -529,50 +659,51 @@ private fun NoteScreenContent(
                     Row(
                         modifier = Modifier
                             .weight(1f)
+                            .height(52.dp)
+                            .clip(RoundedCornerShape(26.dp))
+                            .background(pillBg)
                             .then(if (textMode) Modifier else recordModifier),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        // 左下角声波按钮：语音模式下由手势处理短按；打字模式下独立点击切回语音待命
                         Box(
                             modifier = Modifier
-                                .size(44.dp)
+                                .padding(start = 6.dp)
+                                .size(40.dp)
                                 .clip(CircleShape)
-                                .background(inputBg)
+                                .background(waveCircleBg)
                                 .then(
                                     if (textMode) Modifier.clickable {
                                         exitTextMode()
                                         voiceArmed = true
-                                        status = "语音模式 · 按住输入栏说话"
+                                        status = "按住输入栏，松手保存语音"
                                     } else Modifier
                                 ),
                             contentAlignment = Alignment.Center,
                         ) {
-                            WaveGlyph(color = Accent, modifier = Modifier.size(24.dp))
+                            WaveGlyph(color = Accent, modifier = Modifier.size(22.dp))
                         }
                         Spacer(Modifier.width(8.dp))
                         if (textMode) {
-                            // 打字模式：真正的 TextField，回车键 Done 直接收起键盘退回语音模式
                             TextField(
                                 value = draft,
                                 onValueChange = { draft = it },
                                 modifier = Modifier
                                     .weight(1f)
-                                    .heightIn(min = 56.dp)
+                                    .height(52.dp)
                                     .focusRequester(clipFocusRequester),
                                 placeholder = { Text("输入文字…", fontSize = 14.sp, color = subColor, maxLines = 1) },
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                                 keyboardActions = KeyboardActions(onDone = { exitTextMode() }),
                                 trailingIcon = {
-                                    // 收起键盘按钮：点击退出打字模式，回到语音模式
                                     IconButton(onClick = { exitTextMode() }) {
                                         Icon(Icons.Default.KeyboardArrowDown, contentDescription = "收起键盘", tint = subColor)
                                     }
                                 },
                                 colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = inputBg,
-                                    unfocusedContainerColor = inputBg,
-                                    disabledContainerColor = inputBg,
+                                    focusedContainerColor = Color.Transparent,
+                                    unfocusedContainerColor = Color.Transparent,
+                                    disabledContainerColor = Color.Transparent,
                                     focusedIndicatorColor = Color.Transparent,
                                     unfocusedIndicatorColor = Color.Transparent,
                                     cursorColor = Accent,
@@ -581,19 +712,15 @@ private fun NoteScreenContent(
                                 ),
                             )
                         } else {
-                            // 语音模式：纯文本占位，没有可聚焦的 EditText，长按绝不会弹键盘
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .heightIn(min = 56.dp)
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(inputBg)
-                                    .padding(horizontal = 16.dp),
+                                    .padding(end = 14.dp),
                                 contentAlignment = Alignment.CenterStart,
                             ) {
                                 Text(
                                     text = if (draft.isBlank()) {
-                                        if (voiceArmed) "按住说话" else "按住说话 · 点此打字"
+                                        if (voiceArmed) "按住说话" else "点此打字"
                                     } else draft,
                                     fontSize = 14.sp,
                                     color = if (draft.isBlank()) subColor else textColor,
@@ -603,11 +730,28 @@ private fun NoteScreenContent(
                         }
                     }
                     if (draft.isNotBlank() || pendingAudio != null) {
-                        Spacer(Modifier.width(6.dp))
-                        IconButton(onClick = { sendDraft() }) {
-                            Icon(Icons.Default.Send, contentDescription = "保存", tint = Accent)
+                        Spacer(Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(Accent.copy(alpha = 0.14f))
+                                .clickable { sendDraft() },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "保存", tint = Accent, modifier = Modifier.size(20.dp))
                         }
                     }
+                }
+                val hint = if (pendingAudio != null) "待保存的语音 · 输入文字后点发送" else status
+                if (hint.isNotBlank()) {
+                    Text(
+                        hint,
+                        fontSize = 10.sp,
+                        color = subColor,
+                        maxLines = 1,
+                        modifier = Modifier.padding(start = 18.dp, bottom = 6.dp),
+                    )
                 }
             }
 
@@ -703,6 +847,7 @@ private fun NoteScreenContent(
             notesFilePath = noteStore.notesFilePath,
             recordingsDirPath = noteStore.recordingsDirPath,
             onRefresh = { refreshData() },
+            onOpenPath = { path, isDir -> openPath(path, isDir) },
             onApiKeyChange = { apiKeyInput = it },
             onWorkspaceChange = { workspaceInput = it },
             onModelChange = { modelInput = it },
@@ -826,6 +971,7 @@ private fun SettingsPage(
     notesFilePath: String,
     recordingsDirPath: String,
     onRefresh: () -> Unit,
+    onOpenPath: (String, Boolean) -> Unit,
     onApiKeyChange: (String) -> Unit,
     onWorkspaceChange: (String) -> Unit,
     onModelChange: (String) -> Unit,
@@ -883,9 +1029,13 @@ private fun SettingsPage(
                 // 本机存储路径
                 CardBox(cardBg) {
                     Column(Modifier.padding(12.dp)) {
-                        PathLine("记录文件", notesFilePath, subColor, textColor)
+                        PathLine("记录文件", notesFilePath, subColor, textColor) {
+                            onOpenPath(notesFilePath, false)
+                        }
                         Spacer(Modifier.height(6.dp))
-                        PathLine("语音目录", recordingsDirPath, subColor, textColor)
+                        PathLine("语音目录", recordingsDirPath, subColor, textColor) {
+                            onOpenPath(recordingsDirPath, true)
+                        }
                     }
                 }
                 Spacer(Modifier.height(6.dp))
@@ -1007,10 +1157,26 @@ private fun StatItem(label: String, value: String, color: Color) {
 }
 
 @Composable
-private fun PathLine(label: String, path: String, subColor: Color, textColor: Color) {
-    Column {
-        Text(label, fontSize = 11.sp, color = subColor)
-        Text(path, fontSize = 10.sp, color = textColor)
+private fun PathLine(
+    label: String,
+    path: String,
+    subColor: Color,
+    textColor: Color,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, fontSize = 11.sp, color = subColor)
+            Text(path, fontSize = 10.sp, color = textColor)
+        }
+        Icon(Icons.Default.FolderOpen, contentDescription = "打开目录", tint = Accent, modifier = Modifier.size(18.dp))
     }
 }
 
@@ -1028,7 +1194,7 @@ private fun DataRow(note: com.liweiwen.voicenotes.data.Note, textColor: Color, s
                 maxLines = 1,
             )
             Text(
-                formatRecordTime(note.time) + if (note.hasAudio) " · 语音 ${formatDuration(note.durationMs)}" else " · 文字",
+                formatRecordTime(note.time) + if (note.hasAudio) " · 语音 ${formatDuration(note.effectiveDurationMs)}" else " · 文字",
                 fontSize = 10.sp,
                 color = subColor,
             )

@@ -50,8 +50,8 @@ fun RecordingPanel(mode: SlideMode, liveText: String, elapsedSec: Int, dark: Boo
         label = "pulse",
     )
 
-    val scrim = if (dark) Color(0xD9000000) else Color(0x99000000)
-    val panelBg = if (dark) Color(0xFF5A5A5A) else Color(0xFFB8B8B8)
+    val scrim = if (dark) Color(0xB8000000) else Color(0x8A000000)
+    val panelBg = if (dark) Color(0xFF303030) else Color(0xFFF7F7F7)
 
     Box(
         modifier = Modifier
@@ -83,6 +83,7 @@ fun RecordingPanel(mode: SlideMode, liveText: String, elapsedSec: Int, dark: Boo
             mode = mode,
             elapsedSec = elapsedSec,
             panelBg = panelBg,
+            dark = dark,
             pulse = pulse,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -100,17 +101,28 @@ private fun ArcRecordingPanel(
     mode: SlideMode,
     elapsedSec: Int,
     panelBg: Color,
+    dark: Boolean,
     pulse: Float,
     modifier: Modifier = Modifier,
 ) {
     val panelHeight = 272.dp
     val cancelActive = mode == SlideMode.CANCEL
     val editActive = mode == SlideMode.EDIT
-    val inactiveBtn = Color(0xFF2C2C2C)
+    // 未选中时是半透明磨砂片，选中后才染色，避免整块深灰生硬感
+    val inactiveBtn = if (dark) Color(0x2EFFFFFF) else Color(0x26000000)
     val cancelColor = if (cancelActive) Color(0xFFE64340) else inactiveBtn
     val editColor = if (editActive) Color(0xFF07C160) else inactiveBtn
+    val strokeColor = if (dark) Color(0x22FFFFFF) else Color(0x1A000000)
 
     Box(modifier = modifier.height(panelHeight)) {
+        // 圆角磨砂底板：只占底部，四周留出深色背景，不再是一整块矩形灰条
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(panelHeight)
+                .clip(androidx.compose.foundation.shape.RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
+                .background(if (dark) Color(0xE6121212) else Color(0xFAFFFFFF)),
+        )
         // 图形层：中央半圆 + 两片月牙
         Canvas(modifier = Modifier.fillMaxWidth().height(panelHeight)) {
             val w = size.width
@@ -127,6 +139,7 @@ private fun ArcRecordingPanel(
                 outerR = radius + 108f,
                 startDeg = 196f, sweepDeg = 60f,
                 color = cancelColor,
+                outline = strokeColor,
             )
             // 右月牙：对称贴在右上方
             drawArcSector(
@@ -135,6 +148,7 @@ private fun ArcRecordingPanel(
                 outerR = radius + 108f,
                 startDeg = -56f, sweepDeg = 60f,
                 color = editColor,
+                outline = strokeColor,
             )
 
             // 中央录音半圆（覆盖在月牙内侧之上）
@@ -145,6 +159,16 @@ private fun ArcRecordingPanel(
                 useCenter = true,
                 topLeft = Offset(cx - radius, cy - radius),
                 size = androidx.compose.ui.geometry.Size(radius * 2f, radius * 2f),
+            )
+            // 中央半圆的细描边，让层次更清楚
+            drawArc(
+                color = strokeColor,
+                startAngle = 180f,
+                sweepAngle = 180f,
+                useCenter = false,
+                topLeft = Offset(cx - radius, cy - radius),
+                size = androidx.compose.ui.geometry.Size(radius * 2f, radius * 2f),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
             )
         }
 
@@ -158,9 +182,9 @@ private fun ArcRecordingPanel(
             val textR = radius + 56f
             drawIntoCanvas { canvas ->
                 val paint = android.graphics.Paint().apply {
-                    color = android.graphics.Color.WHITE
+                    color = if (dark) android.graphics.Color.WHITE else android.graphics.Color.parseColor("#222222")
                     textAlign = android.graphics.Paint.Align.CENTER
-                    textSize = 42f
+                    textSize = 36f
                     isAntiAlias = true
                     typeface = android.graphics.Typeface.DEFAULT_BOLD
                 }
@@ -177,14 +201,14 @@ private fun ArcRecordingPanel(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             WaveGlyph(
-                color = Color.White,
-                modifier = Modifier.scale(pulse).size(44.dp),
+                color = Color(0xFF07C160),
+                modifier = Modifier.scale(pulse).size(40.dp),
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
             Text(
                 text = formatElapsed(elapsedSec),
-                color = Color.White,
-                fontSize = 24.sp,
+                color = if (dark) Color.White else Color(0xFF222222),
+                fontSize = 26.sp,
                 fontWeight = FontWeight.Medium,
             )
             Spacer(Modifier.height(4.dp))
@@ -192,9 +216,9 @@ private fun ArcRecordingPanel(
                 text = when (mode) {
                     SlideMode.CANCEL -> "松开取消"
                     SlideMode.EDIT -> "松开后转成文字"
-                    SlideMode.CENTER -> "松手转文字并保存"
+                    SlideMode.CENTER -> "松手保存语音"
                 },
-                color = Color(0xFFEEEEEE),
+                color = if (dark) Color(0xFFAAAAAA) else Color(0xFF777777),
                 fontSize = 12.sp,
             )
         }
@@ -205,6 +229,7 @@ private fun ArcRecordingPanel(
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawArcSector(
     cx: Float, cy: Float, innerR: Float, outerR: Float,
     startDeg: Float, sweepDeg: Float, color: Color,
+    outline: Color? = null,
 ) {
     val path = androidx.compose.ui.graphics.Path().apply {
         // 外弧起点
@@ -228,6 +253,9 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawArcSector(
         close()
     }
     drawPath(path, color)
+    if (outline != null) {
+        drawPath(path, outline, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f))
+    }
 }
 
 /** 在极坐标半径 textR、角度 posAngleDeg 处绘制文字，文字按 rotateDeg 倾斜。 */

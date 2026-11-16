@@ -12,6 +12,28 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.VoiceNotes">
 
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.liweiwen.voicenotes.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- 让系统「文件」应用能直接浏览本 App 的记录与语音目录 -->
+        <provider
+            android:name=".data.VoiceNotesDocumentsProvider"
+            android:authorities="com.liweiwen.voicenotes.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

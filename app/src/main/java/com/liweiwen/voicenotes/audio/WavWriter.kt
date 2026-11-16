@@ -35,7 +35,9 @@ class WavWriter(private val file: File, private val sampleRate: Int) {
         return try {
             raf.seek(0)
             raf.write(buildHeader(dataSize))
-            dataSize.toLong() / (sampleRate * BYTES_PER_SAMPLE)
+            // 返回毫秒：字节数 / 每秒字节数得到秒，再乘 1000。
+            // 之前漏乘导致所有记录都显示 0:00。
+            dataSize.toLong() * 1000L / (sampleRate * BYTES_PER_SAMPLE)
         } finally {
             raf.close()
         }

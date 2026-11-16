@@ -16,6 +16,31 @@ data class Note(
     val durationMs: Long = 0L,
 ) {
     val hasAudio: Boolean get() = !audioPath.isNullOrBlank()
+
+    /**
+     * 显示用时长。旧版本把秒当成毫秒写入 notes.json，导致记录全是 0:00；
+     * 这里在 durationMs 无效时按 WAV 文件大小反推时长，保证老数据也能正确显示。
+     */
+    val effectiveDurationMs: Long
+        get() {
+            // WAV 文件大小是权威值：旧版把「秒」误写成「毫秒」，
+            // 所以只要有语音文件就优先按文件大小反推，避免继续显示 0:00。
+            val path = audioPath
+            if (!path.isNullOrBlank()) {
+                val fromFile = runCatching {
+                    val pcmBytes = File(path).length() - WAV_HEADER_BYTES
+                    if (pcmBytes <= 0L) 0L else pcmBytes * 1000L / (PCM_SAMPLE_RATE * PCM_BYTES_PER_FRAME)
+                }.getOrDefault(0L)
+                if (fromFile > 0L) return fromFile
+            }
+            return durationMs.coerceAtLeast(0L)
+        }
+
+    private companion object {
+        const val WAV_HEADER_BYTES = 44L
+        const val PCM_SAMPLE_RATE = 16_000L
+        const val PCM_BYTES_PER_FRAME = 2L // 16bit 单声道
+    }
 }
 
 /** 本地 JSON + WAV 文件存储：完全离线，不上传任何记录内容。 */
@@ -40,9 +65,11 @@ class NoteStore(context: Context) {
         audioPath: String? = null,
         durationMs: Long = 0L,
     ): Note {
+        // 纯语音记录用统一占位文案，界面再按 hasAudio 显示时长与播放键
+        val finalText = if (text.isBlank() && !audioPath.isNullOrBlank()) "[语音消息]" else text.trim()
         val note = Note(
             id = UUID.randomUUID().toString(),
-            text = text,
+            text = finalText,
             time = System.currentTimeMillis(),
             fromVoice = fromVoice,
             audioPath = audioPath,
@@ -101,15 +128,19 @@ class NoteStore(context: Context) {
             val array = JSONArray(file.readText())
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
+                val loaded = Note(
+                    id = obj.getString("id"),
+                    text = obj.getString("text"),
+                    time = obj.getLong("time"),
+                    fromVoice = obj.optBoolean("fromVoice"),
+                    audioPath = obj.optString("audioPath").ifBlank { null },
+                    durationMs = obj.optLong("durationMs"),
+                )
+                // 老数据顺手修正一次时长（旧版把秒当成毫秒写进 JSON）
                 notes.add(
-                    Note(
-                        id = obj.getString("id"),
-                        text = obj.getString("text"),
-                        time = obj.getLong("time"),
-                        fromVoice = obj.optBoolean("fromVoice"),
-                        audioPath = obj.optString("audioPath").ifBlank { null },
-                        durationMs = obj.optLong("durationMs"),
-                    ),
+                    if (loaded.hasAudio) {
+                        loaded.copy(durationMs = loaded.effectiveDurationMs)
+                    } else loaded,
                 )
             }
         } catch (_: Exception) {

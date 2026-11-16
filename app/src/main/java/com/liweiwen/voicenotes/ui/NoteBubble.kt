@@ -61,7 +61,7 @@ fun NoteBubble(
                 if (note.hasAudio) {
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        "· 语音 ${formatDuration(note.durationMs)}",
+                        "· 语音 ${formatDuration(note.effectiveDurationMs)}",
                         fontSize = 11.sp,
                         color = Accent,
                     )
