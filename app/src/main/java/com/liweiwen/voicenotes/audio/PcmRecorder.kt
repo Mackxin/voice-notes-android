@@ -9,14 +9,24 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 
 /**
- * 从麦克风采集 16kHz / 16bit / 单声道 PCM，每约 100ms 回调一帧。
- * 这个格式与百炼 paraformer-realtime-v2 的 format=pcm、sample_rate=16000 一致。
+ * 麦克风采集 16kHz / 16bit / 单声道 PCM。
+ * - 每帧回调给 ASR 流式发送
+ * - 同一帧顺带写入 WAV 文件，实现「语音文件本地保存」
  */
-class PcmRecorder(private val onChunk: (ByteArray) -> Unit) {
+class PcmRecorder(
+    private val onChunk: (ByteArray) -> Unit,
+    wavFile: File? = null,
+) {
+    private val writer = wavFile?.let { WavWriter(it, SAMPLE_RATE) }
     private var recorder: AudioRecord? = null
     private var scope: CoroutineScope? = null
+
+    /** 本次录音时长（毫秒），stop() 后可读。 */
+    var durationMs: Long = 0L
+        private set
 
     fun start(): Boolean {
         if (recorder != null) return true
@@ -39,6 +49,7 @@ class PcmRecorder(private val onChunk: (ByteArray) -> Unit) {
             return false
         }
 
+        writer?.open()
         recorder = audioRecord
         audioRecord.startRecording()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO).also { coroutineScope ->
@@ -48,7 +59,11 @@ class PcmRecorder(private val onChunk: (ByteArray) -> Unit) {
                     audioRecord.recordingState == AudioRecord.RECORDSTATE_RECORDING
                 ) {
                     val size = audioRecord.read(buffer, 0, buffer.size)
-                    if (size > 0) onChunk(buffer.copyOf(size))
+                    if (size > 0) {
+                        val chunk = buffer.copyOf(size)
+                        writer?.write(chunk)
+                        onChunk(chunk)
+                    }
                 }
             }
         }
@@ -65,9 +80,10 @@ class PcmRecorder(private val onChunk: (ByteArray) -> Unit) {
                 audioRecord.stop()
             }
         } catch (_: Exception) {
-            // 录音已经停止时忽略
+            // 已停止则忽略
         }
         audioRecord.release()
+        durationMs = writer?.close() ?: 0L
     }
 
     companion object {
