@@ -59,6 +59,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -66,6 +68,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -138,6 +141,8 @@ private fun NoteScreenContent(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val clipFocusRequester = remember { FocusRequester() }
     val clipboard = LocalClipboardManager.current
     val listState = rememberLazyListState()
     val density = LocalDensity.current
@@ -145,6 +150,9 @@ private fun NoteScreenContent(
 
     var notes by remember { mutableStateOf(noteStore.all()) }
     var draft by remember { mutableStateOf("") }
+    // 默认语音模式：输入栏是纯文本按钮，不含可聚焦的 EditText，长按绝不会弹键盘。
+    // 短按才切到打字模式，换成真正的 TextField 并聚焦。
+    var textMode by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("点按输入框打字，或按住输入栏说话") }
     var recording by remember { mutableStateOf(false) }
     var slideMode by remember { mutableStateOf(SlideMode.CENTER) }
@@ -179,6 +187,14 @@ private fun NoteScreenContent(
         status = if (granted) "已获得麦克风权限，按住输入栏说话" else "需要麦克风权限才能录音"
     }
 
+    // 切到打字模式时，等 TextField 组合完成后再聚焦并弹键盘
+    LaunchedEffect(textMode) {
+        if (textMode) {
+            clipFocusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
+
     // 录音计时
     LaunchedEffect(recording) {
         if (!recording) return@LaunchedEffect
@@ -204,6 +220,9 @@ private fun NoteScreenContent(
         saveNote(draft, audio != null, audio?.first, audio?.second ?: 0L)
         draft = ""
         pendingAudio = null
+        textMode = false
+        focusManager.clearFocus()
+        keyboardController?.hide()
         status = "已记下"
     }
 
@@ -314,6 +333,7 @@ private fun NoteScreenContent(
 
         if (mode == SlideMode.EDIT) {
             draft = spoken
+            textMode = true
             wavFile?.let { pendingAudio = it.absolutePath to duration }
             status = if (result is AsrResult.Failure) {
                 "转写失败，语音已保留，可手动输入文字"
@@ -429,53 +449,89 @@ private fun NoteScreenContent(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 8.dp)
-                        .then(
-                            recordGesture(
-                                thresholdPx = slideThresholdPx,
-                                onStart = {
-                                    // 同步收键盘，避免遮挡录音面板
-                                    focusManager.clearFocus()
-                                    finishJob?.cancel()
-                                    finishJob = scope.launch { startRecording() }
-                                },
-                                onSlideModeChange = { slideMode = it },
-                                onEnd = { mode -> finishJob = scope.launch { stopRecording(mode) } },
-                            ),
-                        ),
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // 图2 第一个按钮：声波图标
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(inputBg),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        WaveGlyph(color = Accent, modifier = Modifier.size(24.dp))
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    TextField(
-                        value = draft,
-                        onValueChange = { draft = it },
+                    // 手势只覆盖「声波按钮 + 输入区」，发送按钮独立在外，避免被拦截
+                    Row(
                         modifier = Modifier
                             .weight(1f)
-                            .height(48.dp),
-                        placeholder = { Text("可按住 转文字", fontSize = 14.sp, color = subColor) },
-                        singleLine = true,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = inputBg,
-                            unfocusedContainerColor = inputBg,
-                            disabledContainerColor = inputBg,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                            cursorColor = Accent,
-                            focusedTextColor = textColor,
-                            unfocusedTextColor = textColor,
-                        ),
-                    )
+                            .then(
+                                recordGesture(
+                                    thresholdPx = slideThresholdPx,
+                                    onTap = {
+                                        // 短按：切到打字模式，由 LaunchedEffect 聚焦并弹键盘
+                                        textMode = true
+                                    },
+                                    onStart = {
+                                        // 长按：收起键盘、退出打字模式，再开始录音
+                                        textMode = false
+                                        focusManager.clearFocus()
+                                        keyboardController?.hide()
+                                        finishJob?.cancel()
+                                        finishJob = scope.launch { startRecording() }
+                                    },
+                                    onSlideModeChange = { slideMode = it },
+                                    onEnd = { mode -> finishJob = scope.launch { stopRecording(mode) } },
+                                ),
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // 图2 第一个按钮：声波图标
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(inputBg),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            WaveGlyph(color = Accent, modifier = Modifier.size(24.dp))
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        if (textMode) {
+                            // 打字模式：真正的 TextField，长按手势此时不会误触（键盘已在，长按用于录音）
+                            TextField(
+                                value = draft,
+                                onValueChange = { draft = it },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 56.dp)
+                                    .focusRequester(clipFocusRequester),
+                                placeholder = { Text("输入文字…", fontSize = 14.sp, color = subColor, maxLines = 1) },
+                                singleLine = true,
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = inputBg,
+                                    unfocusedContainerColor = inputBg,
+                                    disabledContainerColor = inputBg,
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent,
+                                    cursorColor = Accent,
+                                    focusedTextColor = textColor,
+                                    unfocusedTextColor = textColor,
+                                ),
+                            )
+                        } else {
+                            // 语音模式：纯文本占位，没有可聚焦的 EditText，长按绝不会弹键盘
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 56.dp)
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(inputBg)
+                                    .padding(horizontal = 16.dp),
+                                contentAlignment = Alignment.CenterStart,
+                            ) {
+                                Text(
+                                    text = if (draft.isBlank()) "按住说话 · 点此打字" else draft,
+                                    fontSize = 14.sp,
+                                    color = if (draft.isBlank()) subColor else textColor,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                    }
                     if (draft.isNotBlank() || pendingAudio != null) {
+                        Spacer(Modifier.width(6.dp))
                         IconButton(onClick = { sendDraft() }) {
                             Icon(Icons.Default.Send, contentDescription = "保存", tint = Accent)
                         }
@@ -586,16 +642,24 @@ private fun NoteScreenContent(
     }
 }
 
-/** 长按手势：按住 → 录音；左滑「取消」，右滑「编辑」；短按不处理，交给输入框。 */
+/**
+ * 长按手势：按住 → 录音；左滑「取消」，右滑「编辑」；短按 → 打字。
+ * 关键：在 Initial 阶段就消费 down 事件，让内部 TextField 收不到点击，
+ * 从而彻底杜绝「长按却弹出输入法」。短按抬起时再手动把焦点交给输入框。
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun recordGesture(
     thresholdPx: Float,
+    onTap: () -> Unit,
     onStart: () -> Unit,
     onSlideModeChange: (SlideMode) -> Unit,
     onEnd: (SlideMode) -> Unit,
 ): Modifier = Modifier.pointerInput(thresholdPx) {
     awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false)
+        // Initial pass 早于 TextField 的点击处理；consume 后输入框不会自行聚焦弹键盘
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        down.consume()
         val downX = down.position.x
         val downY = down.position.y
         var longPressed = false
@@ -605,10 +669,10 @@ private fun recordGesture(
 
         while (true) {
             val event = if (longPressed) {
-                awaitPointerEvent(PointerEventPass.Main)
+                awaitPointerEvent(PointerEventPass.Initial)
             } else {
                 withTimeoutOrNull(LONG_PRESS_MS) {
-                    awaitPointerEvent(PointerEventPass.Main)
+                    awaitPointerEvent(PointerEventPass.Initial)
                 }
             }
             if (event == null) {
@@ -616,6 +680,8 @@ private fun recordGesture(
                 onStart()
                 continue
             }
+            // 消费后续事件，防止事件继续传给输入框造成滚动或聚焦
+            event.changes.forEach { if (it.id == down.id) it.consume() }
             val change = event.changes.firstOrNull { it.id == down.id }
             if (change == null || !change.pressed) break
 
@@ -639,7 +705,7 @@ private fun recordGesture(
                 }
             }
         }
-        if (longPressed) onEnd(mode)
+        if (longPressed) onEnd(mode) else onTap()
     }
 }
 
