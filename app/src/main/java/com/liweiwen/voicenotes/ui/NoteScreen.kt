@@ -84,6 +84,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -143,9 +144,10 @@ enum class SlideMode { CENTER, CANCEL, EDIT }
 enum class InputMode { TRANSCRIBE, VOICE }
 
 private const val LONG_PRESS_MS = 260L
-private val Accent = Color(0xFF00A88C)
-private val AccentBright = Color(0xFF62E6C8)
-private val Secondary = Color(0xFF7C6CFF)
+// 强调色改为读当前主题配色（CompositionLocal），41 处调用点无需改动
+@get:Composable private val Accent: Color get() = LocalPalette.current.accent
+@get:Composable private val AccentBright: Color get() = LocalPalette.current.accentBright
+@get:Composable private val Secondary: Color get() = LocalPalette.current.secondary
 private val BgDark = Color(0xFF0B1020)
 private val SurfaceDark = Color(0xFF141B2D)
 private val CardDark = Color(0xFF1B2438)
@@ -159,46 +161,56 @@ private val CardLight = Color(0xFFEEF3F9)
 fun NoteScreen(noteStore: NoteStore, settingsStore: SettingsStore) {
     var theme by remember { mutableStateOf(settingsStore.theme) }
     var heroPinned by remember { mutableStateOf(settingsStore.heroPinned) }
+    var themeColor by remember { mutableStateOf(settingsStore.themeColor) }
     val systemDark = isSystemInDarkTheme()
     val dark = when (theme) {
         "dark" -> true
         "light" -> false
         else -> systemDark
     }
-    val colors = if (dark) {
-        darkColorScheme(
-            primary = AccentBright,
-            secondary = Secondary,
-            background = BgDark,
-            surface = SurfaceDark,
-            onPrimary = Color(0xFF06231D),
-        )
-    } else {
-        lightColorScheme(
-            primary = Accent,
-            secondary = Secondary,
-            background = BgLight,
-            surface = SurfaceLight,
-            onPrimary = Color.White,
-        )
-    }
+    val palette = AppPalettes.from(themeColor)
+    // Provider 必须在 colorScheme 之外：AccentBright / Accent 现在读 LocalPalette
+    CompositionLocalProvider(LocalPalette provides palette) {
+        val colors = if (dark) {
+            darkColorScheme(
+                primary = AccentBright,
+                secondary = Secondary,
+                background = BgDark,
+                surface = SurfaceDark,
+                onPrimary = Color(0xFF06231D),
+            )
+        } else {
+            lightColorScheme(
+                primary = Accent,
+                secondary = Secondary,
+                background = BgLight,
+                surface = SurfaceLight,
+                onPrimary = Color.White,
+            )
+        }
 
-    MaterialTheme(colorScheme = colors) {
-        NoteScreenContent(
-            noteStore = noteStore,
-            settingsStore = settingsStore,
-            dark = dark,
-            theme = theme,
-            onThemeChange = { value ->
-                settingsStore.theme = value
-                theme = value
-            },
-            heroPinned = heroPinned,
-            onHeroPinnedChange = { value ->
-                settingsStore.heroPinned = value
-                heroPinned = value
-            },
-        )
+        MaterialTheme(colorScheme = colors) {
+            NoteScreenContent(
+                noteStore = noteStore,
+                settingsStore = settingsStore,
+                dark = dark,
+                theme = theme,
+                onThemeChange = { value ->
+                    settingsStore.theme = value
+                    theme = value
+                },
+                heroPinned = heroPinned,
+                onHeroPinnedChange = { value ->
+                    settingsStore.heroPinned = value
+                    heroPinned = value
+                },
+                themeColor = themeColor,
+                onThemeColorChange = { value ->
+                    settingsStore.themeColor = value
+                    themeColor = value
+                },
+            )
+        }
     }
 }
 
@@ -212,6 +224,8 @@ private fun NoteScreenContent(
     onThemeChange: (String) -> Unit,
     heroPinned: Boolean,
     onHeroPinnedChange: (Boolean) -> Unit,
+    themeColor: String,
+    onThemeColorChange: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -912,10 +926,10 @@ private fun NoteScreenContent(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .shadow(12.dp, RoundedCornerShape(24.dp), clip = true)
-                        .clip(RoundedCornerShape(24.dp))
+                        .shadow(12.dp, RoundedCornerShape(50), clip = true)
+                        .clip(RoundedCornerShape(50))
                         .background(surface)
-                        .border(1.dp, if (dark) Color(0x22FFFFFF) else Color(0x12000000), RoundedCornerShape(24.dp))
+                        .border(1.dp, if (dark) Color(0x22FFFFFF) else Color(0x12000000), RoundedCornerShape(50))
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceEvenly,
@@ -983,13 +997,13 @@ private fun NoteScreenContent(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .shadow(12.dp, RoundedCornerShape(22.dp), clip = true)
-                        .clip(RoundedCornerShape(22.dp))
+                        .shadow(12.dp, RoundedCornerShape(50), clip = true)
+                        .clip(RoundedCornerShape(50))
                         .background(surface)
                         .border(
                             1.dp,
                             if (dark) Color(0x22FFFFFF) else Color(0x12000000),
-                            RoundedCornerShape(22.dp),
+                            RoundedCornerShape(50),
                         )
                         .padding(horizontal = 8.dp, vertical = 5.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1032,7 +1046,7 @@ private fun NoteScreenContent(
                         modifier = Modifier
                             .weight(1f)
                             .height(46.dp)
-                            .clip(RoundedCornerShape(23.dp))
+                            .clip(RoundedCornerShape(50))
                             .background(pillBg)
                             .then(if (textMode) Modifier else recordModifier),
                         verticalAlignment = Alignment.CenterVertically,
@@ -1260,6 +1274,8 @@ private fun NoteScreenContent(
             theme = theme,
             heroPinned = heroPinned,
             onHeroPinnedChange = onHeroPinnedChange,
+            themeColor = themeColor,
+            onThemeColorChange = onThemeColorChange,
             stats = dataStats,
             notesFilePath = noteStore.notesFilePath,
             recordingsDirPath = noteStore.recordingsDirPath,
@@ -1321,9 +1337,9 @@ private fun HomeHero(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(22.dp))
+            .clip(RoundedCornerShape(50))
             .background(Brush.linearGradient(listOf(base, tint)))
-            .border(1.dp, if (dark) Color(0x1AFFFFFF) else Color(0x0D000000), RoundedCornerShape(22.dp))
+            .border(1.dp, if (dark) Color(0x1AFFFFFF) else Color(0x0D000000), RoundedCornerShape(50))
             .padding(horizontal = 18.dp, vertical = 16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1384,9 +1400,9 @@ private fun QuickPasteBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
+            .clip(RoundedCornerShape(50))
             .background(if (dark) CardDark else CardLight)
-            .border(1.dp, (if (dark) AccentBright else Accent).copy(alpha = 0.25f), RoundedCornerShape(18.dp))
+            .border(1.dp, (if (dark) AccentBright else Accent).copy(alpha = 0.25f), RoundedCornerShape(50))
             .padding(horizontal = 12.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1496,6 +1512,8 @@ private fun SettingsPage(
     theme: String,
     heroPinned: Boolean,
     onHeroPinnedChange: (Boolean) -> Unit,
+    themeColor: String,
+    onThemeColorChange: (String) -> Unit,
     stats: com.liweiwen.voicenotes.data.StorageStats,
     notesFilePath: String,
     recordingsDirPath: String,
@@ -1593,7 +1611,41 @@ private fun SettingsPage(
                         }
                     }
                 }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(10.dp))
+                // 主题配色：一排彩色圆点，选中项带白色描边，即时生效
+                Text("主题配色", fontSize = 12.sp, color = subColor)
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AppPalettes.all.forEach { p ->
+                        val selected = p.key == themeColor
+                        val swatch = if (dark) p.accentBright else p.accent
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(swatch)
+                                    .border(
+                                        if (selected) 2.5.dp else 1.dp,
+                                        if (selected) (if (dark) Color.White else Color(0xFF222222)) else Color.Transparent,
+                                        CircleShape,
+                                    )
+                                    .clickable { onThemeColorChange(p.key) },
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                p.name,
+                                fontSize = 10.sp,
+                                color = if (selected) (if (dark) AccentBright else Accent) else subColor,
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1745,9 +1797,9 @@ private fun NoteActionMenu(
 
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(50))
             .background(menuBg)
-            .border(1.dp, if (dark) Color(0x2AFFFFFF) else Color(0x16000000), RoundedCornerShape(14.dp))
+            .border(1.dp, if (dark) Color(0x2AFFFFFF) else Color(0x16000000), RoundedCornerShape(50))
             .padding(horizontal = 4.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

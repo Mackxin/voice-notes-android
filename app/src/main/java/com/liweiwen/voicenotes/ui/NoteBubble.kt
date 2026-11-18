@@ -64,7 +64,8 @@ fun NoteBubble(
     val cardBorder = if (dark) Color(0x24FFFFFF) else Color(0x12000000)
     val textColor = if (dark) Color(0xFFEAF6F3) else Color(0xFF19322E)
     val subText = if (dark) Color(0xFF9FB3B0) else Color(0xFF5F7774)
-    val accent = if (dark) Color(0xFF62E6C8) else Color(0xFF00A88C)
+    val palette = LocalPalette.current
+    val accent = if (dark) palette.accentBright else palette.accent
 
     // 纯语音记录（无转写文字）：只显示波形 + 时长
     val voiceOnly = note.hasAudio && (note.text == "[语音消息]" || note.text.isBlank())
@@ -89,7 +90,7 @@ fun NoteBubble(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.End,
+        horizontalArrangement = Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 多选勾选框：放在气泡左侧，选中变实心
@@ -109,16 +110,16 @@ fun NoteBubble(
             }
             Spacer(Modifier.width(8.dp))
         }
-        Column(horizontalAlignment = Alignment.End) {
+        Column(horizontalAlignment = Alignment.Start) {
             // 只保留时间；语音时长已在气泡内显示，不再重复标注"语音 X:XX"
-            Text(formatTime(note.time), fontSize = 10.sp, color = subText, modifier = Modifier.padding(end = 6.dp, bottom = 4.dp))
+            Text(formatTime(note.time), fontSize = 10.sp, color = subText, modifier = Modifier.padding(start = 6.dp, bottom = 4.dp))
             Box {
                 Column(
                     modifier = Modifier
                         .widthIn(max = 290.dp)
-                        .clip(RoundedCornerShape(20.dp))
+                        .clip(RoundedCornerShape(50))
                         .background(cardBg)
-                        .border(1.dp, bubbleBorder, RoundedCornerShape(20.dp))
+                        .border(1.dp, bubbleBorder, RoundedCornerShape(50))
                         .combinedClickable(onClick = onClick, onLongClick = onLongClick)
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                 ) {
@@ -153,10 +154,10 @@ fun NoteBubble(
                 if (menuOpen) {
                     val density = LocalDensity.current
                     Popup(
-                        // 横向操作条：底边对齐气泡底边、向右缘对齐，从气泡上方展开，避免超出屏幕底部被裁
-                        alignment = Alignment.BottomEnd,
+                        // 气泡靠左：操作条底边对齐气泡底边、左缘对齐，从气泡上方往右展开，避免超出屏幕左右边界
+                        alignment = Alignment.BottomStart,
                         offset = IntOffset(
-                            x = with(density) { (-6).dp.toPx() }.toInt(),
+                            x = with(density) { 6.dp.toPx() }.toInt(),
                             y = with(density) { (-8).dp.toPx() }.toInt(),
                         ),
                         onDismissRequest = onDismissMenu,

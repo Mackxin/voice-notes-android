@@ -75,7 +75,8 @@ fun RecordingPanel(
         label = "phase",
     )
 
-    val primary = if (dark) Color(0xFF62E6C8) else Color(0xFF00A88C)
+    val palette = LocalPalette.current
+    val primary = if (dark) palette.accentBright else palette.accent
     val danger = Color(0xFFFF6B6B)
     val scrim = if (dark) Color(0xF2070B14) else Color(0xF4F4F8FB)
     val titleColor = if (dark) Color(0xFFEAF6F3) else Color(0xFF163A36)

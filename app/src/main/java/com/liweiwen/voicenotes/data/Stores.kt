@@ -204,6 +204,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean("hero_pinned", true)
         set(value) { prefs.edit().putBoolean("hero_pinned", value).apply() }
 
+    /** 主题配色 key（mint/ocean/violet/sunset/rose）。默认薄荷绿。 */
+    var themeColor: String
+        get() = prefs.getString("theme_color", "mint").orEmpty()
+        set(value) { prefs.edit().putString("theme_color", value).apply() }
+
     val wsUrl: String
         get() = if (workspaceId.isBlank()) {
             "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
