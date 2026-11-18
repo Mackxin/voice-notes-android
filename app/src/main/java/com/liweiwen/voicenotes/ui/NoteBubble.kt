@@ -31,12 +31,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import com.liweiwen.voicenotes.data.Note
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -53,6 +56,9 @@ fun NoteBubble(
     selected: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    menuOpen: Boolean = false,
+    onDismissMenu: () -> Unit = {},
+    menu: @Composable () -> Unit = {},
 ) {
     val cardBg = if (dark) Color(0xFF1B2438) else Color(0xFFFFFFFF)
     val cardBorder = if (dark) Color(0x24FFFFFF) else Color(0x12000000)
@@ -66,11 +72,6 @@ fun NoteBubble(
         targetValue = if (multiSelect && selected) accent else if (isPlaying) accent.copy(alpha = 0.7f) else cardBorder,
         animationSpec = tween(180),
         label = "bubbleBorder",
-    )
-    val bubbleBg by animateColorAsState(
-        targetValue = if (multiSelect && selected) accent.copy(alpha = if (dark) 0.16f else 0.10f) else cardBg,
-        animationSpec = tween(180),
-        label = "bubbleBg",
     )
 
     // 播放时波形轻微起伏，给用户明确的"正在响"反馈
@@ -109,13 +110,12 @@ fun NoteBubble(
         Column(horizontalAlignment = Alignment.End) {
             // 只保留时间；语音时长已在气泡内显示，不再重复标注"语音 X:XX"
             Text(formatTime(note.time), fontSize = 10.sp, color = subText, modifier = Modifier.padding(end = 6.dp, bottom = 4.dp))
-            Row(verticalAlignment = Alignment.Bottom) {
+            Box {
                 Column(
                     modifier = Modifier
                         .widthIn(max = 290.dp)
-                        .shadow(8.dp, RoundedCornerShape(20.dp), clip = true)
                         .clip(RoundedCornerShape(20.dp))
-                        .background(bubbleBg)
+                        .background(cardBg)
                         .border(1.dp, bubbleBorder, RoundedCornerShape(20.dp))
                         .combinedClickable(onClick = onClick, onLongClick = onLongClick)
                         .padding(horizontal = 14.dp, vertical = 12.dp),
@@ -146,6 +146,21 @@ fun NoteBubble(
                                 fontWeight = if (voiceOnly) FontWeight.Medium else FontWeight.Normal,
                             )
                         }
+                    }
+                }
+                // 就地弹出的紧凑操作菜单：锚定在气泡旁，点击外部或返回键关闭
+                if (menuOpen) {
+                    val density = LocalDensity.current
+                    Popup(
+                        alignment = Alignment.TopStart,
+                        offset = IntOffset(
+                            x = with(density) { 6.dp.toPx() }.toInt(),
+                            y = with(density) { (-6).dp.toPx() }.toInt(),
+                        ),
+                        onDismissRequest = onDismissMenu,
+                        properties = PopupProperties(focusable = true, clippingEnabled = false),
+                    ) {
+                        menu()
                     }
                 }
             }

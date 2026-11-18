@@ -834,6 +834,26 @@ private fun NoteScreenContent(
                             selected = note.id in selectedIds,
                             onClick = { onBubbleClick(note) },
                             onLongClick = { onBubbleLongClick(note) },
+                            menuOpen = actionNote?.id == note.id,
+                            onDismissMenu = { actionNote = null },
+                            menu = {
+                                NoteActionMenu(
+                                    note = note,
+                                    dark = dark,
+                                    transcribing = transcribingId == note.id,
+                                    onDismiss = { actionNote = null },
+                                    onPlay = { speed -> actionNote = null; playWithSpeed(note, speed) },
+                                    onTranscribe = { actionNote = null; scope.launch { transcribeExisting(note) } },
+                                    onCopy = {
+                                        actionNote = null
+                                        clipboard.setText(AnnotatedString(note.text))
+                                        Toast.makeText(context, "已复制文字", Toast.LENGTH_SHORT).show()
+                                    },
+                                    onEdit = { actionNote = null; editText = note.text; pendingEdit = note },
+                                    onMultiSelect = { actionNote = null; multiSelect = true; selectedIds = setOf(note.id) },
+                                    onDelete = { actionNote = null; pendingDelete = note },
+                                )
+                            },
                         )
                     }
                 }
@@ -1112,42 +1132,6 @@ private fun NoteScreenContent(
                 )
             }
 
-            // 长按记录弹出的底部操作面板（覆盖在本层，不铺灰色遮罩）
-            actionNote?.let { note ->
-                NoteActionSheet(
-                    note = note,
-                    dark = dark,
-                    transcribing = transcribingId == note.id,
-                    onDismiss = { actionNote = null },
-                    onPlay = { speed ->
-                        actionNote = null
-                        playWithSpeed(note, speed)
-                    },
-                    onTranscribe = {
-                        actionNote = null
-                        scope.launch { transcribeExisting(note) }
-                    },
-                    onCopy = {
-                        actionNote = null
-                        clipboard.setText(AnnotatedString(note.text))
-                        Toast.makeText(context, "已复制文字", Toast.LENGTH_SHORT).show()
-                    },
-                    onEdit = {
-                        actionNote = null
-                        editText = note.text
-                        pendingEdit = note
-                    },
-                    onMultiSelect = {
-                        actionNote = null
-                        multiSelect = true
-                        selectedIds = setOf(note.id)
-                    },
-                    onDelete = {
-                        actionNote = null
-                        pendingDelete = note
-                    },
-                )
-            }
         }
     }
 
@@ -1677,10 +1661,9 @@ private fun PathLine(
     }
 }
 
-/** 长按记录弹出的底部操作面板：语音可播放/倍速/转文字，文字可复制/编辑，通用多选/删除。 */
-@OptIn(ExperimentalFoundationApi::class)
+/** 长按记录后就地弹出的紧凑操作菜单：锚定在气泡旁，字号更小、无遮罩。 */
 @Composable
-private fun NoteActionSheet(
+private fun NoteActionMenu(
     note: com.liweiwen.voicenotes.data.Note,
     dark: Boolean,
     transcribing: Boolean,
@@ -1694,69 +1677,40 @@ private fun NoteActionSheet(
 ) {
     val accent = if (dark) AccentBright else Accent
     val textColor = if (dark) Color(0xFFECECEC) else Color(0xFF222222)
-    val sheetBg = if (dark) Color(0xFF1B2438) else Color(0xFFFFFFFF)
+    val menuBg = if (dark) Color(0xFF243049) else Color(0xFFFFFFFF)
     val danger = Color(0xFFE64340)
 
-    // 上半部分点击关闭，底部是面板；不铺任何半透明灰层，避免整屏发灰
-    Column(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .clickable(onClick = onDismiss),
-        )
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
-                .background(sheetBg)
-                .border(1.dp, if (dark) Color(0x22FFFFFF) else Color(0x12000000), RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-        ) {
-            // 顶部拖拽指示条
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterHorizontally)
-                    .size(width = 40.dp, height = 4.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(if (dark) Color(0x44FFFFFF) else Color(0x22000000)),
+    Column(
+        modifier = Modifier
+            .width(154.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(menuBg)
+            .border(1.dp, if (dark) Color(0x2AFFFFFF) else Color(0x16000000), RoundedCornerShape(12.dp))
+            .padding(vertical = 4.dp),
+    ) {
+        if (note.hasAudio) {
+            MenuItem(Icons.Default.PlayArrow, "播放", accent) { onPlay(1.0f) }
+            MenuItem(Icons.Default.PlayArrow, "1.5x 播放", accent) { onPlay(1.5f) }
+            MenuItem(Icons.Default.PlayArrow, "2x 播放", accent) { onPlay(2.0f) }
+            MenuItem(
+                Icons.Default.Edit,
+                if (transcribing) "转文字中…" else "转文字",
+                accent,
+                enabled = !transcribing,
+                onClick = onTranscribe,
             )
-            Spacer(Modifier.height(12.dp))
-            Column {
-                Text("记录操作", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = textColor)
-                val preview = if (note.hasAudio && (note.text == "[语音消息]" || note.text.isBlank())) {
-                    "语音 · ${note.effectiveDurationMs / 1000} 秒"
-                } else {
-                    note.text.take(24) + if (note.text.length > 24) "…" else ""
-                }
-                Text(preview, fontSize = 12.sp, color = if (dark) Color(0xFF9FB3B0) else Color(0xFF888888))
-            }
-            Spacer(Modifier.height(8.dp))
-            if (note.hasAudio) {
-                ActionRow(Icons.Default.PlayArrow, "播放语音", accent, onClick = { onPlay(1.0f) })
-                ActionRow(Icons.Default.PlayArrow, "1.5 倍速播放", accent, onClick = { onPlay(1.5f) })
-                ActionRow(Icons.Default.PlayArrow, "2 倍速播放", accent, onClick = { onPlay(2.0f) })
-                ActionRow(
-                    Icons.Default.Edit,
-                    if (transcribing) "正在转文字…" else "语音转文字",
-                    accent,
-                    enabled = !transcribing,
-                    onClick = onTranscribe,
-                )
-            }
-            if (note.text.isNotBlank() && note.text != "[语音消息]") {
-                ActionRow(AppIcons.ContentCopy, "复制文字", accent, onClick = onCopy)
-                ActionRow(Icons.Default.Edit, "编辑内容", accent, onClick = onEdit)
-            }
-            ActionRow(AppIcons.SelectAll, "多选", accent, onClick = onMultiSelect)
-            ActionRow(Icons.Default.Delete, "删除记录", danger, onClick = onDelete)
-            Spacer(Modifier.height(4.dp))
         }
+        if (note.text.isNotBlank() && note.text != "[语音消息]") {
+            MenuItem(AppIcons.ContentCopy, "复制", accent, onClick = onCopy)
+            MenuItem(Icons.Default.Edit, "编辑", accent, onClick = onEdit)
+        }
+        MenuItem(AppIcons.SelectAll, "多选", accent, onClick = onMultiSelect)
+        MenuItem(Icons.Default.Delete, "删除", danger, onClick = onDelete)
     }
 }
 
 @Composable
-private fun ActionRow(
+private fun MenuItem(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     color: Color,
@@ -1766,14 +1720,13 @@ private fun ActionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 11.dp),
+            .padding(horizontal = 12.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, contentDescription = null, tint = if (enabled) color else color.copy(alpha = 0.4f), modifier = Modifier.size(20.dp))
-        Spacer(Modifier.width(14.dp))
-        Text(label, fontSize = 15.sp, color = if (enabled) color else color.copy(alpha = 0.4f))
+        Icon(icon, contentDescription = null, tint = if (enabled) color else color.copy(alpha = 0.4f), modifier = Modifier.size(15.dp))
+        Spacer(Modifier.width(10.dp))
+        Text(label, fontSize = 12.sp, color = if (enabled) color else color.copy(alpha = 0.4f))
     }
 }
 

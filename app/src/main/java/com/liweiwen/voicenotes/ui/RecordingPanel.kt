@@ -219,8 +219,8 @@ fun RecordingPanel(
                 isCancel = true,
                 dark = dark,
             )
-            // 中间滑动进度轨道
-            SlideTrack(progress = progress, cancelColor = danger, editColor = primary, dark = dark, modifier = Modifier.weight(1f))
+            // 中间留空（不要横线），仅用左右操作块的填充与放大反馈滑动落点
+            Spacer(Modifier.weight(1f))
             ActionBlock(
                 label = if (inputMode == InputMode.VOICE) "转文字" else "转文字编辑",
                 active = editActive,
@@ -294,42 +294,6 @@ private fun ActionBlock(
             fontSize = 14.sp,
             fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
         )
-    }
-}
-
-/** 中间滑动进度轨道：一个跟随手指的小滑块，左红右绿。 */
-@Composable
-private fun SlideTrack(progress: Float, cancelColor: Color, editColor: Color, dark: Boolean, modifier: Modifier = Modifier) {
-    val trackColor = if (dark) Color(0x33FFFFFF) else Color(0x1A000000)
-    val indicator = when {
-        progress < -0.02f -> cancelColor
-        progress > 0.02f -> editColor
-        else -> if (dark) Color(0xFF8A9A98) else Color(0xFF9AA6A4)
-    }
-    Box(
-        modifier = modifier
-            .padding(horizontal = 14.dp)
-            .height(6.dp)
-            .clip(RoundedCornerShape(3.dp))
-            .background(trackColor),
-    ) {
-        // 中心刻度
-        Box(
-            modifier = Modifier
-                .align(Alignment.Center)
-                .size(width = 2.dp, height = 6.dp)
-                .background(if (dark) Color(0x55FFFFFF) else Color(0x33000000)),
-        )
-        // 滑块：progress -1..1 映射到轨道两端（用 Canvas 按真实宽度定位）
-        androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxWidth().height(6.dp)) {
-            val w = size.width
-            val cx = (progress + 1f) / 2f * w
-            drawCircle(
-                color = indicator,
-                radius = 7.dp.toPx(),
-                center = Offset(cx.coerceIn(0f, w), size.height / 2f),
-            )
-        }
     }
 }
 
