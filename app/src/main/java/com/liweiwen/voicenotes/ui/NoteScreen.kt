@@ -69,6 +69,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -106,6 +108,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -151,6 +154,7 @@ private val CardLight = Color(0xFFEEF3F9)
 @Composable
 fun NoteScreen(noteStore: NoteStore, settingsStore: SettingsStore) {
     var theme by remember { mutableStateOf(settingsStore.theme) }
+    var heroPinned by remember { mutableStateOf(settingsStore.heroPinned) }
     val systemDark = isSystemInDarkTheme()
     val dark = when (theme) {
         "dark" -> true
@@ -185,6 +189,11 @@ fun NoteScreen(noteStore: NoteStore, settingsStore: SettingsStore) {
                 settingsStore.theme = value
                 theme = value
             },
+            heroPinned = heroPinned,
+            onHeroPinnedChange = { value ->
+                settingsStore.heroPinned = value
+                heroPinned = value
+            },
         )
     }
 }
@@ -197,6 +206,8 @@ private fun NoteScreenContent(
     dark: Boolean,
     theme: String,
     onThemeChange: (String) -> Unit,
+    heroPinned: Boolean,
+    onHeroPinnedChange: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -784,16 +795,20 @@ private fun NoteScreenContent(
                 .background(background),
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
-                HomeHero(
-                    noteCount = notes.size,
-                    audioCount = notes.count { it.hasAudio },
-                    dark = dark,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                )
+                // 置顶开启（或空列表）时，统计卡固定在列表上方
+                if (heroPinned || visibleNotes.isEmpty()) {
+                    HomeHero(
+                        noteCount = notes.size,
+                        audioCount = notes.count { it.hasAudio },
+                        dark = dark,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    )
+                }
                 Box(modifier = Modifier.weight(1f)) {
             if (visibleNotes.isEmpty()) {
                 Column(
                     modifier = Modifier
+                        .fillMaxWidth()
                         .align(Alignment.Center)
                         .pointerInput(textMode) {
                             detectTapGestures { if (textMode) exitTextMode() }
@@ -806,12 +821,14 @@ private fun NoteScreenContent(
                         if (keyword.isBlank()) "按住输入栏，说话即记录" else "没有找到匹配的记录",
                         fontSize = 16.sp,
                         color = textColor,
+                        textAlign = TextAlign.Center,
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
                         if (keyword.isBlank()) "语音与文字都保存在本机" else "换个关键词试试，共 ${notes.size} 条记录",
                         fontSize = 12.sp,
                         color = subColor,
+                        textAlign = TextAlign.Center,
                     )
                 }
             } else {
@@ -855,6 +872,17 @@ private fun NoteScreenContent(
                                 )
                             },
                         )
+                    }
+                    // 不置顶时：统计卡作为列表最后一项，reverseLayout 下显示在最顶端，随列表滚动
+                    if (!heroPinned) {
+                        item(key = "home_hero") {
+                            HomeHero(
+                                noteCount = notes.size,
+                                audioCount = notes.count { it.hasAudio },
+                                dark = dark,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                            )
+                        }
                     }
                 }
             }
@@ -1058,8 +1086,8 @@ private fun NoteScreenContent(
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .padding(end = 14.dp),
-                                contentAlignment = Alignment.CenterStart,
+                                    .padding(horizontal = 14.dp),
+                                contentAlignment = Alignment.Center,
                             ) {
                                 val placeholderText = if (draft.isNotBlank()) {
                                     draft
@@ -1099,16 +1127,6 @@ private fun NoteScreenContent(
                             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "保存", tint = modeAccent, modifier = Modifier.size(20.dp))
                         }
                     }
-                }
-                val hint = if (pendingAudio != null) "待保存的语音 · 输入文字后点发送" else status
-                if (hint.isNotBlank()) {
-                    Text(
-                        hint,
-                        fontSize = 10.sp,
-                        color = subColor,
-                        maxLines = 1,
-                        modifier = Modifier.padding(start = 18.dp, bottom = 6.dp),
-                    )
                 }
             }
             }
@@ -1220,6 +1238,8 @@ private fun NoteScreenContent(
             workspaceInput = workspaceInput,
             modelInput = modelInput,
             theme = theme,
+            heroPinned = heroPinned,
+            onHeroPinnedChange = onHeroPinnedChange,
             stats = dataStats,
             notesFilePath = noteStore.notesFilePath,
             recordingsDirPath = noteStore.recordingsDirPath,
@@ -1454,6 +1474,8 @@ private fun SettingsPage(
     workspaceInput: String,
     modelInput: String,
     theme: String,
+    heroPinned: Boolean,
+    onHeroPinnedChange: (Boolean) -> Unit,
     stats: com.liweiwen.voicenotes.data.StorageStats,
     notesFilePath: String,
     recordingsDirPath: String,
@@ -1550,6 +1572,28 @@ private fun SettingsPage(
                             )
                         }
                     }
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("统计卡固定置顶", fontSize = 13.sp, color = textColor)
+                        Text(
+                            if (heroPinned) "统计卡固定在顶部，不随列表滚动" else "统计卡随记录列表一起滚动",
+                            fontSize = 11.sp,
+                            color = subColor,
+                        )
+                    }
+                    Switch(
+                        checked = heroPinned,
+                        onCheckedChange = onHeroPinnedChange,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Accent,
+                            checkedTrackColor = Accent.copy(alpha = 0.5f),
+                        ),
+                    )
                 }
             }
 
@@ -1682,7 +1726,7 @@ private fun NoteActionMenu(
 
     Column(
         modifier = Modifier
-            .width(154.dp)
+            .width(168.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(menuBg)
             .border(1.dp, if (dark) Color(0x2AFFFFFF) else Color(0x16000000), RoundedCornerShape(12.dp))
@@ -1726,7 +1770,7 @@ private fun MenuItem(
     ) {
         Icon(icon, contentDescription = null, tint = if (enabled) color else color.copy(alpha = 0.4f), modifier = Modifier.size(15.dp))
         Spacer(Modifier.width(10.dp))
-        Text(label, fontSize = 12.sp, color = if (enabled) color else color.copy(alpha = 0.4f))
+        Text(label, fontSize = 12.sp, color = if (enabled) color else color.copy(alpha = 0.4f), maxLines = 1)
     }
 }
 

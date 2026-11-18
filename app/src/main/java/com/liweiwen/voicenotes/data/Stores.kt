@@ -199,6 +199,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getString("theme", "dark").orEmpty()
         set(value) { prefs.edit().putString("theme", value).apply() }
 
+    /** 首页统计卡是否固定置顶（不随列表滚动）。默认置顶。 */
+    var heroPinned: Boolean
+        get() = prefs.getBoolean("hero_pinned", true)
+        set(value) { prefs.edit().putBoolean("hero_pinned", value).apply() }
+
     val wsUrl: String
         get() = if (workspaceId.isBlank()) {
             "wss://dashscope.aliyuncs.com/api-ws/v1/inference"

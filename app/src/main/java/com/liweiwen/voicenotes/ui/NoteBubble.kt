@@ -68,6 +68,8 @@ fun NoteBubble(
 
     // 纯语音记录（无转写文字）：只显示波形 + 时长
     val voiceOnly = note.hasAudio && (note.text == "[语音消息]" || note.text.isBlank())
+    // 有真实文字的记录（含已转成文字的语音）：只显示文字，不再显示波形 + 时长
+    val showWave = note.hasAudio && voiceOnly
     val bubbleBorder by animateColorAsState(
         targetValue = if (multiSelect && selected) accent else if (isPlaying) accent.copy(alpha = 0.7f) else cardBorder,
         animationSpec = tween(180),
@@ -129,8 +131,7 @@ fun NoteBubble(
                             color = textColor,
                         )
                     }
-                    if (note.hasAudio) {
-                        if (!voiceOnly) Spacer(Modifier.padding(top = 9.dp))
+                    if (showWave) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             AnimatedWave(
                                 color = if (isPlaying) accent else accent.copy(alpha = 0.75f),
@@ -152,9 +153,10 @@ fun NoteBubble(
                 if (menuOpen) {
                     val density = LocalDensity.current
                     Popup(
-                        alignment = Alignment.TopStart,
+                        // 气泡贴屏幕右侧，菜单从气泡右缘向左展开，避免超出右边界被裁切
+                        alignment = Alignment.TopEnd,
                         offset = IntOffset(
-                            x = with(density) { 6.dp.toPx() }.toInt(),
+                            x = with(density) { (-6).dp.toPx() }.toInt(),
                             y = with(density) { (-6).dp.toPx() }.toInt(),
                         ),
                         onDismissRequest = onDismissMenu,
