@@ -2,35 +2,40 @@ package com.liweiwen.voicenotes.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.liweiwen.voicenotes.data.Note
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
-private val Accent = Color(0xFF07C160)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -42,58 +47,92 @@ fun NoteBubble(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
-    val bubbleBg = if (dark) Color(0xFF2E7D4F) else Color(0xFF95EC69)
-    val bubbleText = if (dark) Color(0xFFF5FFF8) else Color(0xFF1A1A1A)
-    val subText = if (dark) Color(0xFF8A8A8A) else Color(0xFF999999)
+    val cardBg = if (dark) Color(0xFF1B2438) else Color(0xFFFFFFFF)
+    val cardBorder = if (dark) Color(0x24FFFFFF) else Color(0x12000000)
+    val textColor = if (dark) Color(0xFFEAF6F3) else Color(0xFF19322E)
+    val subText = if (dark) Color(0xFF9FB3B0) else Color(0xFF5F7774)
+    val accent = if (dark) Color(0xFF62E6C8) else Color(0xFF00A88C)
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 5.dp),
-        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.End,
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.End,
     ) {
         Column(horizontalAlignment = Alignment.End) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(end = 4.dp, bottom = 3.dp),
+                modifier = Modifier.padding(end = 6.dp, bottom = 4.dp),
             ) {
-                Text(formatTime(note.time), fontSize = 11.sp, color = subText)
-                if (note.hasAudio) {
-                    Spacer(Modifier.width(6.dp))
+                Text(formatTime(note.time), fontSize = 10.sp, color = subText)
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(accent.copy(alpha = 0.12f))
+                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                ) {
                     Text(
-                        "· 语音 ${formatDuration(note.effectiveDurationMs)}",
-                        fontSize = 11.sp,
-                        color = Accent,
+                        if (note.hasAudio) "语音 ${formatDuration(note.effectiveDurationMs)}" else "文字",
+                        fontSize = 10.sp,
+                        color = accent,
+                        fontWeight = FontWeight.Medium,
                     )
                 }
             }
             Row(verticalAlignment = Alignment.Bottom) {
                 if (note.hasAudio) {
-                    IconButton(onClick = onPlayToggle, modifier = Modifier.size(40.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .padding(end = 8.dp, bottom = 4.dp)
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(accent.copy(alpha = 0.14f))
+                            .combinedClickable(onClick = onPlayToggle),
+                        contentAlignment = Alignment.Center,
+                    ) {
                         Icon(
                             imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                             contentDescription = if (isPlaying) "停止播放" else "播放语音",
-                            tint = Accent,
-                            modifier = Modifier.size(22.dp),
+                            tint = accent,
+                            modifier = Modifier.size(19.dp),
                         )
                     }
                 }
                 Column(
                     modifier = Modifier
-                        .widthIn(max = 280.dp)
-                        .clip(
-                            RoundedCornerShape(
-                                topStart = 14.dp,
-                                topEnd = 3.dp,
-                                bottomStart = 14.dp,
-                                bottomEnd = 14.dp,
-                            ),
-                        )
-                        .background(bubbleBg)
+                        .widthIn(max = 290.dp)
+                        .shadow(8.dp, RoundedCornerShape(20.dp), clip = true)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(cardBg)
+                        .border(1.dp, cardBorder, RoundedCornerShape(20.dp))
                         .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-                        .padding(horizontal = 13.dp, vertical = 9.dp),
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
                 ) {
-                    Text(note.text, fontSize = 16.sp, lineHeight = 22.sp, color = bubbleText)
+                    Row(verticalAlignment = Alignment.Top) {
+                        Text(
+                            note.text,
+                            modifier = Modifier.weight(1f),
+                            fontSize = 15.sp,
+                            lineHeight = 21.sp,
+                            color = textColor,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Icon(
+                            Icons.Default.ContentCopy,
+                            contentDescription = "点卡片复制",
+                            tint = subText.copy(alpha = 0.7f),
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+                    if (note.hasAudio) {
+                        Spacer(Modifier.height(9.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            WaveGlyph(color = accent, modifier = Modifier.size(34.dp, 16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(formatDuration(note.effectiveDurationMs), fontSize = 10.sp, color = subText)
+                        }
+                    }
                 }
             }
         }

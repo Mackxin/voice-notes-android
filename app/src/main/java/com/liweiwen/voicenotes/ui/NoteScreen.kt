@@ -1,6 +1,8 @@
 package com.liweiwen.voicenotes.ui
 
 import android.Manifest
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.provider.DocumentsContract
@@ -10,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -41,6 +44,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -70,11 +75,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -109,12 +118,16 @@ import kotlin.math.hypot
 enum class SlideMode { CENTER, CANCEL, EDIT }
 
 private const val LONG_PRESS_MS = 260L
-private val Accent = Color(0xFF07C160)
-private val BgDark = Color(0xFF121212)
-private val SurfaceDark = Color(0xFF1E1E1E)
-private val InputDark = Color(0xFF2A2A2A)
-private val BgLight = Color(0xFFF5F5F5)
+private val Accent = Color(0xFF00A88C)
+private val AccentBright = Color(0xFF62E6C8)
+private val Secondary = Color(0xFF7C6CFF)
+private val BgDark = Color(0xFF0B1020)
+private val SurfaceDark = Color(0xFF141B2D)
+private val CardDark = Color(0xFF1B2438)
+private val InputDark = CardDark
+private val BgLight = Color(0xFFF4F7FB)
 private val SurfaceLight = Color(0xFFFFFFFF)
+private val CardLight = Color(0xFFEEF3F9)
 
 /** 主体：主题放在内部，切换设置即可即时生效。 */
 @Composable
@@ -127,9 +140,21 @@ fun NoteScreen(noteStore: NoteStore, settingsStore: SettingsStore) {
         else -> systemDark
     }
     val colors = if (dark) {
-        darkColorScheme(primary = Accent, background = BgDark, surface = SurfaceDark)
+        darkColorScheme(
+            primary = AccentBright,
+            secondary = Secondary,
+            background = BgDark,
+            surface = SurfaceDark,
+            onPrimary = Color(0xFF06231D),
+        )
     } else {
-        lightColorScheme(primary = Accent, background = BgLight, surface = SurfaceLight)
+        lightColorScheme(
+            primary = Accent,
+            secondary = Secondary,
+            background = BgLight,
+            surface = SurfaceLight,
+            onPrimary = Color.White,
+        )
     }
 
     MaterialTheme(colorScheme = colors) {
@@ -157,6 +182,10 @@ private fun NoteScreenContent(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val systemClipboard = remember {
+        context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    }
+    var clipboardText by remember { mutableStateOf<String?>(null) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val clipFocusRequester = remember { FocusRequester() }
@@ -222,6 +251,28 @@ private fun NoteScreenContent(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         status = if (granted) "已获得麦克风权限，按住输入栏说话" else "需要麦克风权限才能录音"
+    }
+
+    /** 打开 App 或从后台回来时读取剪贴板，复制变化也实时跟进。 */
+    fun refreshClipboard() {
+        val text = runCatching {
+            if (systemClipboard.hasPrimaryClip()) {
+                systemClipboard.primaryClip?.getItemAt(0)?.text?.toString()?.trim()
+            } else null
+        }.getOrNull()
+        clipboardText = text
+            ?.replace('\n', ' ')
+            ?.take(140)
+            ?.ifBlank { null }
+    }
+
+    // 首次进入也要读一次：ON_RESUME 可能在监听注册前就发生了
+    LaunchedEffect(Unit) { refreshClipboard() }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { refreshClipboard() }
+    DisposableEffect(systemClipboard) {
+        val listener = ClipboardManager.OnPrimaryClipChangedListener { refreshClipboard() }
+        systemClipboard.addPrimaryClipChangedListener(listener)
+        onDispose { systemClipboard.removePrimaryClipChangedListener(listener) }
     }
 
     /** 退出打字模式：收起键盘、清除焦点，回到语音模式。返回键/Done 键/收起按钮均走这里。 */
@@ -543,6 +594,14 @@ private fun NoteScreenContent(
                 .fillMaxSize()
                 .background(background),
         ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                HomeHero(
+                    noteCount = notes.size,
+                    audioCount = notes.count { it.hasAudio },
+                    dark = dark,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                )
+                Box(modifier = Modifier.weight(1f)) {
             if (visibleNotes.isEmpty()) {
                 Column(
                     modifier = Modifier
@@ -605,26 +664,46 @@ private fun NoteScreenContent(
                     }
                 }
             }
+                }
+            }
 
-            // 底部输入栏：胶囊输入区 + 柔和状态提示，默认文字只显示「点此打字」
+            // 底部悬浮输入栏 + 剪贴板快贴
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .background(surface),
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
             ) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(1.dp)
-                        .background(if (dark) Color(0x1AFFFFFF) else Color(0x12000000)),
-                )
-                val pillBg = if (dark) Color(0xFF292929) else Color(0xFFF1F1F1)
-                val waveCircleBg = Accent.copy(alpha = if (dark) 0.14f else 0.10f)
+                val pasted = clipboardText
+                if (pasted != null && draft.isBlank()) {
+                    QuickPasteBar(
+                        text = pasted,
+                        dark = dark,
+                        onPaste = {
+                            draft = pasted
+                            clipboardText = null
+                            voiceArmed = false
+                            textMode = true
+                            status = ""
+                        },
+                        onDismiss = { clipboardText = null },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+                val pillBg = if (dark) Color(0x141B2D) else Color(0xFFFFFFFF)
+                val waveCircleBg = if (dark) AccentBright.copy(alpha = 0.16f) else Accent.copy(alpha = 0.10f)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .shadow(12.dp, RoundedCornerShape(24.dp), clip = true)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(surface)
+                        .border(
+                            1.dp,
+                            if (dark) Color(0x22FFFFFF) else Color(0x12000000),
+                            RoundedCornerShape(24.dp),
+                        )
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     // 录音手势：仅语音模式套用。打字模式让 TextField 独占触摸，
@@ -680,7 +759,7 @@ private fun NoteScreenContent(
                                 ),
                             contentAlignment = Alignment.Center,
                         ) {
-                            WaveGlyph(color = Accent, modifier = Modifier.size(22.dp))
+                            WaveGlyph(color = if (dark) AccentBright else Accent, modifier = Modifier.size(22.dp))
                         }
                         Spacer(Modifier.width(8.dp))
                         if (textMode) {
@@ -888,6 +967,112 @@ private fun NoteScreenContent(
             },
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("取消") } },
         )
+    }
+}
+
+/** 首页概览：把「本地、条数、语音段数」一眼说清。 */
+@Composable
+private fun HomeHero(
+    noteCount: Int,
+    audioCount: Int,
+    dark: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val base = if (dark) CardDark else CardLight
+    val tint = if (dark) AccentBright.copy(alpha = 0.10f) else Accent.copy(alpha = 0.09f)
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(Brush.linearGradient(listOf(base, tint)))
+            .border(1.dp, if (dark) Color(0x1AFFFFFF) else Color(0x0D000000), RoundedCornerShape(22.dp))
+            .padding(horizontal = 18.dp, vertical = 16.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.Lock,
+                        contentDescription = null,
+                        tint = if (dark) AccentBright else Accent,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        "本机速记 · 不上传",
+                        fontSize = 11.sp,
+                        color = if (dark) AccentBright else Accent,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "$noteCount 条记录  ·  $audioCount 段语音",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (dark) Color(0xFFEAF6F3) else Color(0xFF163A36),
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    "按住说话，松手存语音；右滑转文字",
+                    fontSize = 11.sp,
+                    color = if (dark) Color(0xFF9FB3B0) else Color(0xFF5F7774),
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .size(52.dp)
+                    .clip(CircleShape)
+                    .background((if (dark) AccentBright else Accent).copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                WaveGlyph(
+                    color = if (dark) AccentBright else Accent,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+        }
+    }
+}
+
+/** 剪贴板快贴条：打开 App 就提示上一条复制内容。 */
+@Composable
+private fun QuickPasteBar(
+    text: String,
+    dark: Boolean,
+    onPaste: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(if (dark) CardDark else CardLight)
+            .border(1.dp, (if (dark) AccentBright else Accent).copy(alpha = 0.25f), RoundedCornerShape(18.dp))
+            .padding(horizontal = 12.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Default.ContentPaste,
+            contentDescription = null,
+            tint = if (dark) AccentBright else Accent,
+            modifier = Modifier.size(17.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text("已检测到复制内容", fontSize = 10.sp, color = if (dark) Color(0xFF9FB3B0) else Color(0xFF5F7774))
+            Text(text, fontSize = 12.sp, maxLines = 1, color = if (dark) Color(0xFFEAF6F3) else Color(0xFF163A36))
+        }
+        Spacer(Modifier.width(8.dp))
+        TextButton(onClick = onPaste) { Text("粘贴", color = if (dark) AccentBright else Accent) }
+        IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "忽略剪贴板",
+                tint = if (dark) Color(0xFF9FB3B0) else Color(0xFF5F7774),
+                modifier = Modifier.size(16.dp),
+            )
+        }
     }
 }
 

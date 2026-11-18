@@ -1,282 +1,236 @@
 package com.liweiwen.voicenotes.ui
 
-import androidx.compose.animation.core.EaseInOut
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * 微信式底部录音面板：
- * 中央大圆录音区 + 两侧沿圆弧分布的「月牙形」按钮「取消」「语音转文字」，
- * 与用户参考图一致：按钮呈弧形切片、文字倾斜贴在弧上。
- * 手指滑到哪个按钮，哪个按钮高亮。
+ * 新版录音面板：声纹光球 + 扩散涟漪 + 左右药丸按钮。
+ * 手势判定仍在输入栏完成，这里只负责视觉反馈。
  */
 @Composable
 fun RecordingPanel(mode: SlideMode, liveText: String, elapsedSec: Int, dark: Boolean) {
-    val infinite = rememberInfiniteTransition(label = "recording")
-    val pulse by infinite.animateFloat(
-        initialValue = 0.92f,
-        targetValue = 1.06f,
-        animationSpec = infiniteRepeatable(tween(720, easing = EaseInOut), RepeatMode.Reverse),
-        label = "pulse",
+    val transition = rememberInfiniteTransition(label = "recording")
+    val ripple by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1700, easing = LinearEasing), RepeatMode.Restart),
+        label = "ripple",
+    )
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2 * PI).toFloat(),
+        animationSpec = infiniteRepeatable(tween(1200, easing = LinearEasing), RepeatMode.Restart),
+        label = "phase",
+    )
+    val cancelScale by animateFloatAsState(
+        targetValue = if (mode == SlideMode.CANCEL) 1.12f else 1f,
+        animationSpec = tween(180),
+        label = "cancelScale",
+    )
+    val editScale by animateFloatAsState(
+        targetValue = if (mode == SlideMode.EDIT) 1.12f else 1f,
+        animationSpec = tween(180),
+        label = "editScale",
     )
 
-    val scrim = if (dark) Color(0xB8000000) else Color(0x8A000000)
-    val panelBg = if (dark) Color(0xFF303030) else Color(0xFFF7F7F7)
+    val primary = if (dark) Color(0xFF62E6C8) else Color(0xFF00A88C)
+    // 录音时几乎不透明，避免底层记录文字透上来干扰读数
+    val scrim = if (dark) Color(0xF2070B14) else Color(0xF4F4F8FB)
+    val titleColor = if (dark) Color(0xFFEAF6F3) else Color(0xFF163A36)
+    val subColor = if (dark) Color(0xFF9FB3B0) else Color(0xFF5F7774)
+    val cancelColor = if (mode == SlideMode.CANCEL) Color(0xFFFF6B6B) else subColor
+    val editColor = if (mode == SlideMode.EDIT) primary else subColor
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(scrim),
     ) {
-        // 实时转写文字（居中显示）
-        if (liveText.isNotBlank()) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(horizontal = 36.dp)
-                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
-                    .background(if (dark) Color(0xFF2A2A2A) else Color(0xEEFFFFFF))
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
-            ) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 84.dp)
+                .padding(horizontal = 28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("正在录音", color = titleColor, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(10.dp))
+            if (liveText.isNotBlank()) {
                 Text(
                     liveText,
-                    color = if (dark) Color(0xFFECECEC) else Color(0xFF222222),
-                    fontSize = 18.sp,
-                    lineHeight = 26.sp,
+                    color = titleColor,
+                    fontSize = 17.sp,
+                    lineHeight = 25.sp,
                     textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(if (dark) Color(0x1AFFFFFF) else Color(0xFFFFFFFF))
+                        .padding(horizontal = 18.dp, vertical = 12.dp),
+                )
+            } else {
+                Text("说出来，随手就记下", color = subColor, fontSize = 13.sp)
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .size(240.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val cx = size.width / 2f
+                val cy = size.height / 2f
+                val px = 1.dp.toPx()
+
+                // 柔和光晕
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(primary.copy(alpha = 0.22f), Color.Transparent),
+                        center = Offset(cx, cy),
+                        radius = 118.dp.toPx(),
+                    ),
+                    radius = 118.dp.toPx(),
+                    center = Offset(cx, cy),
+                )
+
+                // 三层扩散涟漪
+                repeat(3) { index ->
+                    val p = (ripple + index / 3f) % 1f
+                    drawCircle(
+                        color = primary.copy(alpha = (1f - p) * 0.28f),
+                        radius = (64f + p * 58f) * px,
+                        center = Offset(cx, cy),
+                        style = Stroke(width = 1.5f * px),
+                    )
+                }
+
+                // 环形声波：64 根短线，随相位起伏
+                val bars = 64
+                for (i in 0 until bars) {
+                    val angle = i * (2 * PI / bars).toFloat() + phase * 0.16f
+                    val amp = 6f + abs(sin(phase * 1.7f + i * 0.55f)) * 17f
+                    val inner = 70f * px
+                    val outer = inner + amp * px
+                    drawLine(
+                        color = primary.copy(alpha = 0.35f + abs(sin(phase + i * 0.3f)) * 0.5f),
+                        start = Offset(cx + cos(angle) * inner, cy + sin(angle) * inner),
+                        end = Offset(cx + cos(angle) * outer, cy + sin(angle) * outer),
+                        strokeWidth = 2.6f * px,
+                        cap = StrokeCap.Round,
+                    )
+                }
+
+                // 内核
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(primary.copy(alpha = 0.95f), primary.copy(alpha = 0.55f)),
+                        center = Offset(cx, cy),
+                        radius = 56.dp.toPx(),
+                    ),
+                    radius = 56.dp.toPx(),
+                    center = Offset(cx, cy),
+                )
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    formatElapsed(elapsedSec),
+                    color = Color.White,
+                    fontSize = 30.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    when (mode) {
+                        SlideMode.CANCEL -> "松开取消"
+                        SlideMode.EDIT -> "松开转文字"
+                        SlideMode.CENTER -> "松手保存语音"
+                    },
+                    color = Color.White.copy(alpha = 0.88f),
+                    fontSize = 11.sp,
                 )
             }
         }
 
-        // 底部弧形面板
-        ArcRecordingPanel(
-            mode = mode,
-            elapsedSec = elapsedSec,
-            panelBg = panelBg,
-            dark = dark,
-            pulse = pulse,
+        Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .fillMaxWidth(),
-        )
-    }
-}
-
-/**
- * 底部弧形录音面板：中央半圆 + 左右两片月牙按钮。
- * 用 Canvas 绘制圆环扇形（外半径>内半径）得到月牙形，倾斜文字用原生 Canvas 旋转绘制。
- */
-@Composable
-private fun ArcRecordingPanel(
-    mode: SlideMode,
-    elapsedSec: Int,
-    panelBg: Color,
-    dark: Boolean,
-    pulse: Float,
-    modifier: Modifier = Modifier,
-) {
-    val panelHeight = 272.dp
-    val cancelActive = mode == SlideMode.CANCEL
-    val editActive = mode == SlideMode.EDIT
-    // 未选中时是半透明磨砂片，选中后才染色，避免整块深灰生硬感
-    val inactiveBtn = if (dark) Color(0x2EFFFFFF) else Color(0x26000000)
-    val cancelColor = if (cancelActive) Color(0xFFE64340) else inactiveBtn
-    val editColor = if (editActive) Color(0xFF07C160) else inactiveBtn
-    val strokeColor = if (dark) Color(0x22FFFFFF) else Color(0x1A000000)
-
-    Box(modifier = modifier.height(panelHeight)) {
-        // 圆角磨砂底板：只占底部，四周留出深色背景，不再是一整块矩形灰条
-        Box(
-            Modifier
+                .padding(bottom = 52.dp)
                 .fillMaxWidth()
-                .height(panelHeight)
-                .clip(androidx.compose.foundation.shape.RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
-                .background(if (dark) Color(0xE6121212) else Color(0xFAFFFFFF)),
-        )
-        // 图形层：中央半圆 + 两片月牙
-        Canvas(modifier = Modifier.fillMaxWidth().height(panelHeight)) {
-            val w = size.width
-            val h = size.height
-            // 中央半圆：圆心在底边中央
-            val cx = w / 2f
-            val cy = h
-            val radius = w.coerceAtMost(h * 1.5f) * 0.235f
-
-            // 左月牙：更宽的圆环扇形，贴在半圆左上方
-            drawArcSector(
-                cx = cx, cy = cy,
-                innerR = radius + 4f,
-                outerR = radius + 108f,
-                startDeg = 196f, sweepDeg = 60f,
-                color = cancelColor,
-                outline = strokeColor,
-            )
-            // 右月牙：对称贴在右上方
-            drawArcSector(
-                cx = cx, cy = cy,
-                innerR = radius + 4f,
-                outerR = radius + 108f,
-                startDeg = -56f, sweepDeg = 60f,
-                color = editColor,
-                outline = strokeColor,
-            )
-
-            // 中央录音半圆（覆盖在月牙内侧之上）
-            drawArc(
-                color = panelBg,
-                startAngle = 180f,
-                sweepAngle = 180f,
-                useCenter = true,
-                topLeft = Offset(cx - radius, cy - radius),
-                size = androidx.compose.ui.geometry.Size(radius * 2f, radius * 2f),
-            )
-            // 中央半圆的细描边，让层次更清楚
-            drawArc(
-                color = strokeColor,
-                startAngle = 180f,
-                sweepAngle = 180f,
-                useCenter = false,
-                topLeft = Offset(cx - radius, cy - radius),
-                size = androidx.compose.ui.geometry.Size(radius * 2f, radius * 2f),
-                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
-            )
-        }
-
-        // 月牙上的倾斜文字（原生 Canvas 旋转绘制，贴合弧面）
-        Canvas(modifier = Modifier.fillMaxWidth().height(panelHeight)) {
-            val w = size.width
-            val h = size.height
-            val cx = w / 2f
-            val cy = h
-            val radius = w.coerceAtMost(h * 1.5f) * 0.235f
-            val textR = radius + 56f
-            drawIntoCanvas { canvas ->
-                val paint = android.graphics.Paint().apply {
-                    color = if (dark) android.graphics.Color.WHITE else android.graphics.Color.parseColor("#222222")
-                    textAlign = android.graphics.Paint.Align.CENTER
-                    textSize = 36f
-                    isAntiAlias = true
-                    typeface = android.graphics.Typeface.DEFAULT_BOLD
-                }
-                // 左「取消」：月牙中点约 226°
-                drawRotatedText(canvas, paint, "取消", cx, cy, textR, 226f, -26f)
-                // 右「语音转文字」：单行，月牙中点约 -26°
-                drawRotatedText(canvas, paint, "语音转文字", cx, cy, textR, -26f, 26f)
-            }
-        }
-
-        // 中央半圆内容：波形 + 计时 + 提示
-        Column(
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 34.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .padding(horizontal = 24.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            WaveGlyph(
-                color = Color(0xFF07C160),
-                modifier = Modifier.scale(pulse).size(40.dp),
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = formatElapsed(elapsedSec),
-                color = if (dark) Color.White else Color(0xFF222222),
-                fontSize = 26.sp,
-                fontWeight = FontWeight.Medium,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = when (mode) {
-                    SlideMode.CANCEL -> "松开取消"
-                    SlideMode.EDIT -> "松开后转成文字"
-                    SlideMode.CENTER -> "松手保存语音"
-                },
-                color = if (dark) Color(0xFFAAAAAA) else Color(0xFF777777),
-                fontSize = 12.sp,
-            )
+            ActionPill("取消", cancelColor, cancelScale)
+            ActionPill("语音转文字", editColor, editScale)
         }
-    }
-}
-
-/** 绘制圆环扇形（月牙形）：外弧 - 内弧 围成。角度采用 Compose 约定（0°=右，顺时针为正，y 向下）。 */
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawArcSector(
-    cx: Float, cy: Float, innerR: Float, outerR: Float,
-    startDeg: Float, sweepDeg: Float, color: Color,
-    outline: Color? = null,
-) {
-    val path = androidx.compose.ui.graphics.Path().apply {
-        // 外弧起点
-        val s = Math.toRadians(startDeg.toDouble())
-        val e = Math.toRadians((startDeg + sweepDeg).toDouble())
-        moveTo(cx + outerR * cos(s).toFloat(), cy + outerR * sin(s).toFloat())
-        arcTo(
-            rect = androidx.compose.ui.geometry.Rect(cx - outerR, cy - outerR, cx + outerR, cy + outerR),
-            startAngleDegrees = startDeg,
-            sweepAngleDegrees = sweepDeg,
-            forceMoveTo = false,
+        Text(
+            "左滑取消 · 右滑转文字 · 原地松手存语音",
+            color = subColor,
+            fontSize = 11.sp,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 22.dp),
         )
-        // 连到内弧终点并反向画回
-        lineTo(cx + innerR * cos(e).toFloat(), cy + innerR * sin(e).toFloat())
-        arcTo(
-            rect = androidx.compose.ui.geometry.Rect(cx - innerR, cy - innerR, cx + innerR, cy + innerR),
-            startAngleDegrees = startDeg + sweepDeg,
-            sweepAngleDegrees = -sweepDeg,
-            forceMoveTo = false,
-        )
-        close()
-    }
-    drawPath(path, color)
-    if (outline != null) {
-        drawPath(path, outline, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f))
     }
 }
 
-/** 在极坐标半径 textR、角度 posAngleDeg 处绘制文字，文字按 rotateDeg 倾斜。 */
-private fun drawRotatedText(
-    canvas: androidx.compose.ui.graphics.Canvas,
-    paint: android.graphics.Paint,
-    text: String,
-    cx: Float, cy: Float, textR: Float, posAngleDeg: Float, rotateDeg: Float,
-) {
-    val rad = Math.toRadians(posAngleDeg.toDouble())
-    val x = cx + textR * cos(rad).toFloat()
-    val y = cy + textR * sin(rad).toFloat()
-    val native = canvas.nativeCanvas
-    native.save()
-    native.translate(x, y)
-    native.rotate(rotateDeg)
-    native.drawText(text, 0f, 0f, paint)
-    native.restore()
+@Composable
+private fun ActionPill(label: String, color: Color, scale: Float) {
+    Box(
+        modifier = Modifier
+            .graphicsLayer(scaleX = scale, scaleY = scale)
+            .clip(RoundedCornerShape(40.dp))
+            .background(color.copy(alpha = 0.12f))
+            .border(1.dp, color.copy(alpha = 0.42f), RoundedCornerShape(40.dp))
+            .padding(horizontal = 18.dp, vertical = 11.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = color, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+    }
 }
 
-/** 六条声波竖线组成的图标（不依赖图标库）。 */
+/** 六条声波竖线组成的图标（输入栏与空态复用）。 */
 @Composable
 fun WaveGlyph(color: Color, modifier: Modifier = Modifier) {
     Canvas(modifier = modifier) {
@@ -292,7 +246,7 @@ fun WaveGlyph(color: Color, modifier: Modifier = Modifier) {
                 start = Offset(bx, (h - bh) / 2),
                 end = Offset(bx, (h + bh) / 2),
                 strokeWidth = barW * 0.62f,
-                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                cap = StrokeCap.Round,
             )
         }
     }
