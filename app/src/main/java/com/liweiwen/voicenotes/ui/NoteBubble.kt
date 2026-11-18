@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -147,6 +148,23 @@ fun NoteBubble(
                                 color = if (isPlaying) accent else subText,
                                 fontWeight = if (voiceOnly) FontWeight.Medium else FontWeight.Normal,
                             )
+                        }
+                    }
+                    // 标签小胶囊：紧跟正文下方，一眼看出这条属于哪个分类
+                    if (note.tags.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            note.tags.forEach { tag ->
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(50))
+                                        .background(accent.copy(alpha = 0.14f))
+                                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                                ) {
+                                    Text("#$tag", fontSize = 10.sp, color = accent)
+                                }
+                                Spacer(Modifier.width(4.dp))
+                            }
                         }
                     }
                 }

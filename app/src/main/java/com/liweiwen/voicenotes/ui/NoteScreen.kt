@@ -132,6 +132,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import android.graphics.Color as AndroidColor
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.material3.Slider
+import com.liweiwen.voicenotes.audio.TtsSpeaker
+import com.liweiwen.voicenotes.data.BackupManager
 import kotlin.math.hypot
 
 enum class SlideMode { CENTER, CANCEL, EDIT }
@@ -142,6 +147,9 @@ enum class SlideMode { CENTER, CANCEL, EDIT }
  * - VOICE「按住说话」：长按录音，松手直接存语音文件；左滑取消；右滑语音转文字。
  */
 enum class InputMode { TRANSCRIBE, VOICE }
+
+/** 记录列表的两种浏览方式：普通列表 / 按日期分组的时间轴。 */
+enum class ViewMode { LIST, TIMELINE }
 
 private const val LONG_PRESS_MS = 260L
 // 强调色改为读当前主题配色（CompositionLocal），41 处调用点无需改动
@@ -162,13 +170,14 @@ fun NoteScreen(noteStore: NoteStore, settingsStore: SettingsStore) {
     var theme by remember { mutableStateOf(settingsStore.theme) }
     var heroPinned by remember { mutableStateOf(settingsStore.heroPinned) }
     var themeColor by remember { mutableStateOf(settingsStore.themeColor) }
+    var customAccent by remember { mutableStateOf(settingsStore.customAccent) }
     val systemDark = isSystemInDarkTheme()
     val dark = when (theme) {
         "dark" -> true
         "light" -> false
         else -> systemDark
     }
-    val palette = AppPalettes.from(themeColor)
+    val palette = AppPalettes.from(themeColor, customAccent)
     // Provider 必须在 colorScheme 之外：AccentBright / Accent 现在读 LocalPalette
     CompositionLocalProvider(LocalPalette provides palette) {
         val colors = if (dark) {
@@ -209,6 +218,11 @@ fun NoteScreen(noteStore: NoteStore, settingsStore: SettingsStore) {
                     settingsStore.themeColor = value
                     themeColor = value
                 },
+                customAccent = customAccent,
+                onCustomAccentChange = { value ->
+                    settingsStore.customAccent = value
+                    customAccent = value
+                },
             )
         }
     }
@@ -226,6 +240,8 @@ private fun NoteScreenContent(
     onHeroPinnedChange: (Boolean) -> Unit,
     themeColor: String,
     onThemeColorChange: (String) -> Unit,
+    customAccent: String,
+    onCustomAccentChange: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -281,18 +297,6 @@ private fun NoteScreenContent(
     var currentAudioFile by remember { mutableStateOf<File?>(null) }
     var finishJob by remember { mutableStateOf<Job?>(null) }
 
-    // 全局搜索：匹配记录正文、语音标记与显示时间
-    val keyword = searchQuery.trim()
-    val visibleNotes = if (keyword.isBlank()) {
-        notes
-    } else {
-        notes.filter { note ->
-            note.text.contains(keyword, ignoreCase = true) ||
-                (note.hasAudio && "语音".contains(keyword, ignoreCase = true)) ||
-                formatRecordTime(note.time).contains(keyword, ignoreCase = true)
-        }
-    }
-
     val audioPlayer = remember { AudioPlayer() }
     var playingPath by remember { mutableStateOf<String?>(null) }
     DisposableEffect(Unit) {
@@ -302,6 +306,38 @@ private fun NoteScreenContent(
     var apiKeyInput by remember { mutableStateOf(settingsStore.apiKey) }
     var workspaceInput by remember { mutableStateOf(settingsStore.workspaceId) }
     var modelInput by remember { mutableStateOf(settingsStore.model) }
+
+    // ===== v2.0 新增功能的界面状态 =====
+    var viewMode by remember { mutableStateOf(ViewMode.LIST) }
+    var activeTag by remember { mutableStateOf<String?>(null) }
+    var trashOpen by remember { mutableStateOf(false) }
+    var trashNotes by remember { mutableStateOf(noteStore.trash()) }
+    var confirmEmptyTrash by remember { mutableStateOf(false) }
+    var tagTarget by remember { mutableStateOf<Note?>(null) }
+    var tagDraft by remember { mutableStateOf("") }
+    var colorPickerOpen by remember { mutableStateOf(false) }
+    var ttsSpeaking by remember { mutableStateOf(false) }
+
+    // 系统 TTS：文字朗读，与语音播放互不干扰（触发时互相停止）
+    val tts = remember { TtsSpeaker(context) }
+    DisposableEffect(Unit) {
+        onDispose { tts.release() }
+    }
+    tts.onSpeakingChange = { ttsSpeaking = it }
+
+    // 先按标签筛选，再按关键词搜索：两者可叠加使用
+    val keyword = searchQuery.trim()
+    val tagFilter = activeTag
+    val tagScoped = if (tagFilter == null) notes else notes.filter { tagFilter in it.tags }
+    val visibleNotes = if (keyword.isBlank()) {
+        tagScoped
+    } else {
+        tagScoped.filter { note ->
+            note.text.contains(keyword, ignoreCase = true) ||
+                (note.hasAudio && "语音".contains(keyword, ignoreCase = true)) ||
+                formatRecordTime(note.time).contains(keyword, ignoreCase = true)
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -341,6 +377,62 @@ private fun NoteScreenContent(
     fun refreshData() {
         notes = noteStore.all()
         dataStats = noteStore.stats()
+        trashNotes = noteStore.trash()
+    }
+
+    /** 导入备份后，把设置相关的界面状态同步为本机最新值。 */
+    fun reloadSettingsState() {
+        apiKeyInput = settingsStore.apiKey
+        workspaceInput = settingsStore.workspaceId
+        modelInput = settingsStore.model
+        onThemeChange(settingsStore.theme)
+        onThemeColorChange(settingsStore.themeColor)
+        onCustomAccentChange(settingsStore.customAccent)
+        onHeroPinnedChange(settingsStore.heroPinned)
+    }
+
+    // 备份：系统文件选择器负责选保存位置 / 选备份包，App 只读写选中的 URI
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip"),
+    ) { uri ->
+        uri?.let {
+            scope.launch {
+                val result = runCatching { BackupManager.export(context, it, noteStore, settingsStore) }
+                if (result.isSuccess) {
+                    val r = result.getOrThrow()
+                    Toast.makeText(
+                        context,
+                        "已导出 ${r.noteCount} 条记录 · ${r.audioCount} 段语音",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                } else {
+                    Toast.makeText(context, "导出失败：${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        uri?.let {
+            scope.launch {
+                val result = runCatching { BackupManager.import(context, it, noteStore, settingsStore) }
+                if (result.isSuccess) {
+                    val r = result.getOrThrow()
+                    reloadSettingsState()
+                    refreshData()
+                    activeTag = null
+                    Toast.makeText(
+                        context,
+                        "已恢复 ${r.noteCount} 条记录 · ${r.audioCount} 段语音",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                } else {
+                    Toast.makeText(context, "导入失败：${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
 
     fun exitMultiSelect() {
@@ -397,19 +489,23 @@ private fun NoteScreenContent(
         if (searchOpen) searchFocusRequester.requestFocus()
     }
 
-    // 返回键优先级：设置页 > 多选 > 搜索 > 打字模式 >（不拦截，交给系统退出）
-    BackHandler(enabled = showSettings) {
+    // 返回键优先级：回收站 > 设置页 > 多选 > 搜索 > 打字模式 >（不拦截，交给系统退出）
+    BackHandler(enabled = trashOpen) {
+        trashOpen = false
+        refreshData()
+    }
+    BackHandler(enabled = !trashOpen && showSettings) {
         showSettings = false
         refreshData()
     }
-    BackHandler(enabled = !showSettings && multiSelect) {
+    BackHandler(enabled = !trashOpen && !showSettings && multiSelect) {
         exitMultiSelect()
     }
-    BackHandler(enabled = !showSettings && !multiSelect && searchOpen) {
+    BackHandler(enabled = !trashOpen && !showSettings && !multiSelect && searchOpen) {
         searchOpen = false
         searchQuery = ""
     }
-    BackHandler(enabled = !showSettings && !multiSelect && !searchOpen && textMode) {
+    BackHandler(enabled = !trashOpen && !showSettings && !multiSelect && !searchOpen && textMode) {
         exitTextMode()
     }
 
@@ -443,6 +539,7 @@ private fun NoteScreenContent(
                 audioPlayer.stop()
                 playingPath = null
             } else {
+                tts.stop()
                 audioPlayer.play(path, playbackSpeed, onFinished = { playingPath = null })
                 playingPath = path
             }
@@ -468,10 +565,39 @@ private fun NoteScreenContent(
     fun playWithSpeed(note: Note, speed: Float) {
         val path = note.audioPath ?: return
         playbackSpeed = speed
+        tts.stop()
         audioPlayer.stop()
         audioPlayer.play(path, speed, onFinished = { playingPath = null })
         playingPath = path
         Toast.makeText(context, "以 ${speed}x 播放", Toast.LENGTH_SHORT).show()
+    }
+
+    /** 朗读文字记录：先停语音播放，避免两种声音叠加。正在朗读时再点即为停止。 */
+    fun readAloud(note: Note) {
+        if (ttsSpeaking) {
+            tts.stop()
+            Toast.makeText(context, "已停止朗读", Toast.LENGTH_SHORT).show()
+            return
+        }
+        audioPlayer.stop()
+        playingPath = null
+        val text = note.text.takeIf { it.isNotBlank() && it != "[语音消息]" }
+        if (text == null) {
+            Toast.makeText(context, "这条记录没有可朗读的文字", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!tts.speak(text)) {
+            Toast.makeText(context, "语音朗读暂不可用，请检查系统中文语音包", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** 给记录添加或移除标签。 */
+    fun toggleTag(note: Note, tag: String) {
+        val trimmed = tag.trim()
+        if (trimmed.isBlank()) return
+        val next = if (trimmed in note.tags) note.tags - trimmed else note.tags + trimmed
+        noteStore.setTags(note.id, next)
+        refreshNotes()
     }
 
     /**
@@ -546,10 +672,10 @@ private fun NoteScreenContent(
             audioPlayer.stop()
             playingPath = null
         }
-        noteStore.deleteMany(selectedIds)
+        noteStore.moveManyToTrash(selectedIds)
         refreshNotes()
         exitMultiSelect()
-        Toast.makeText(context, "已删除 ${removed.size} 条记录", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "已移入回收站 ${removed.size} 条", Toast.LENGTH_SHORT).show()
     }
 
     fun saveNote(text: String, fromVoice: Boolean, audioPath: String? = null, durationMs: Long = 0L) {
@@ -778,6 +904,17 @@ private fun NoteScreenContent(
                         if (!searchOpen) {
                             IconButton(onClick = {
                                 exitTextMode()
+                                activeTag = null
+                                viewMode = if (viewMode == ViewMode.LIST) ViewMode.TIMELINE else ViewMode.LIST
+                            }) {
+                                Icon(
+                                    AppIcons.Calendar,
+                                    contentDescription = if (viewMode == ViewMode.LIST) "时间轴视图" else "列表视图",
+                                    tint = if (viewMode == ViewMode.TIMELINE) Accent else textColor,
+                                )
+                            }
+                            IconButton(onClick = {
+                                exitTextMode()
                                 multiSelect = true
                                 selectedIds = emptySet()
                             }) {
@@ -822,8 +959,89 @@ private fun NoteScreenContent(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                     )
                 }
+
+                // 标签筛选条：横向滚动，点一下只看该标签，再点一下取消
+                val tagOptions = noteStore.allTags()
+                if (tagOptions.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 12.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TagChip("全部", activeTag == null, dark) { activeTag = null }
+                        tagOptions.forEach { tag ->
+                            Spacer(Modifier.width(6.dp))
+                            TagChip(tag, activeTag == tag, dark) {
+                                activeTag = if (activeTag == tag) null else tag
+                            }
+                        }
+                        Spacer(Modifier.width(12.dp))
+                    }
+                }
+
+                // 列表视图与时间轴视图共用同一套气泡渲染，避免两处逻辑分叉
+                val renderNote: @Composable (Note) -> Unit = { note ->
+                    NoteBubble(
+                        note = note,
+                        dark = dark,
+                        isPlaying = playingPath == note.audioPath && note.audioPath != null,
+                        multiSelect = multiSelect,
+                        selected = note.id in selectedIds,
+                        onClick = { onBubbleClick(note) },
+                        onLongClick = { onBubbleLongClick(note) },
+                        menuOpen = actionNote?.id == note.id,
+                        onDismissMenu = { actionNote = null },
+                        menu = {
+                            NoteActionMenu(
+                                note = note,
+                                dark = dark,
+                                transcribing = transcribingId == note.id,
+                                ttsSpeaking = ttsSpeaking && actionNote?.id == note.id,
+                                onDismiss = { actionNote = null },
+                                onPlay = { speed -> actionNote = null; playWithSpeed(note, speed) },
+                                onTranscribe = { actionNote = null; scope.launch { transcribeExisting(note) } },
+                                onRead = { actionNote = null; readAloud(note) },
+                                onTag = { tagTarget = note; tagDraft = "" },
+                                onCopy = {
+                                    actionNote = null
+                                    clipboard.setText(AnnotatedString(note.text))
+                                    Toast.makeText(context, "已复制文字", Toast.LENGTH_SHORT).show()
+                                },
+                                onEdit = { actionNote = null; editText = note.text; pendingEdit = note },
+                                onMultiSelect = { actionNote = null; multiSelect = true; selectedIds = setOf(note.id) },
+                                onDelete = { actionNote = null; pendingDelete = note },
+                            )
+                        },
+                    )
+                }
                 Box(modifier = Modifier.weight(1f)) {
-            if (visibleNotes.isEmpty()) {
+            if (viewMode == ViewMode.TIMELINE && visibleNotes.isNotEmpty()) {
+                // 时间轴：按日期分组，顶部日期吸顶，同样支持点空白收键盘
+                TimelineNotes(
+                    notes = visibleNotes.asReversed(),
+                    renderNote = renderNote,
+                    showHero = !heroPinned,
+                    hero = {
+                        HomeHero(
+                            noteCount = notes.size,
+                            audioCount = notes.count { it.hasAudio },
+                            dark = dark,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        )
+                    },
+                    modifier = Modifier.pointerInput(textMode, searchOpen) {
+                        detectTapGestures {
+                            if (textMode) exitTextMode()
+                            if (searchOpen) {
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                            }
+                        }
+                    },
+                )
+            } else if (visibleNotes.isEmpty()) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -842,14 +1060,18 @@ private fun NoteScreenContent(
                     WaveGlyph(color = Accent.copy(alpha = 0.6f), modifier = Modifier.size(48.dp))
                     Spacer(Modifier.height(14.dp))
                     Text(
-                        if (keyword.isBlank()) "按住输入栏，说话即记录" else "没有找到匹配的记录",
+                        if (keyword.isNotBlank()) "没有找到匹配的记录"
+                        else if (activeTag != null) "「$activeTag」下还没有记录"
+                        else "按住输入栏，说话即记录",
                         fontSize = 16.sp,
                         color = textColor,
                         textAlign = TextAlign.Center,
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        if (keyword.isBlank()) "语音与文字都保存在本机" else "换个关键词试试，共 ${notes.size} 条记录",
+                        if (keyword.isNotBlank()) "换个关键词试试，共 ${notes.size} 条记录"
+                        else if (activeTag != null) "点上方「全部」返回所有记录"
+                        else "语音与文字都保存在本机",
                         fontSize = 12.sp,
                         color = subColor,
                         textAlign = TextAlign.Center,
@@ -873,35 +1095,7 @@ private fun NoteScreenContent(
                     contentPadding = PaddingValues(top = 12.dp, bottom = 116.dp),
                 ) {
                     items(visibleNotes.asReversed(), key = { it.id }) { note ->
-                        NoteBubble(
-                            note = note,
-                            dark = dark,
-                            isPlaying = playingPath == note.audioPath && note.audioPath != null,
-                            multiSelect = multiSelect,
-                            selected = note.id in selectedIds,
-                            onClick = { onBubbleClick(note) },
-                            onLongClick = { onBubbleLongClick(note) },
-                            menuOpen = actionNote?.id == note.id,
-                            onDismissMenu = { actionNote = null },
-                            menu = {
-                                NoteActionMenu(
-                                    note = note,
-                                    dark = dark,
-                                    transcribing = transcribingId == note.id,
-                                    onDismiss = { actionNote = null },
-                                    onPlay = { speed -> actionNote = null; playWithSpeed(note, speed) },
-                                    onTranscribe = { actionNote = null; scope.launch { transcribeExisting(note) } },
-                                    onCopy = {
-                                        actionNote = null
-                                        clipboard.setText(AnnotatedString(note.text))
-                                        Toast.makeText(context, "已复制文字", Toast.LENGTH_SHORT).show()
-                                    },
-                                    onEdit = { actionNote = null; editText = note.text; pendingEdit = note },
-                                    onMultiSelect = { actionNote = null; multiSelect = true; selectedIds = setOf(note.id) },
-                                    onDelete = { actionNote = null; pendingDelete = note },
-                                )
-                            },
-                        )
+                        renderNote(note)
                     }
                     // 不置顶时：统计卡作为列表最后一项，reverseLayout 下显示在最顶端，随列表滚动
                     if (!heroPinned) {
@@ -1187,6 +1381,79 @@ private fun NoteScreenContent(
         }
     }
 
+    // 回收站全屏页
+    if (trashOpen) {
+        TrashPage(
+            dark = dark,
+            notes = trashNotes,
+            onBack = {
+                trashOpen = false
+                refreshData()
+            },
+            onRestore = { id ->
+                noteStore.restore(id)
+                refreshNotes()
+                refreshData()
+                Toast.makeText(context, "已恢复到记录列表", Toast.LENGTH_SHORT).show()
+            },
+            onDeleteForever = { id ->
+                noteStore.delete(id)
+                refreshData()
+                Toast.makeText(context, "已彻底删除", Toast.LENGTH_SHORT).show()
+            },
+            onEmpty = { confirmEmptyTrash = true },
+        )
+    }
+
+    // 标签编辑：已有标签点选切换，也可以直接输入新标签
+    tagTarget?.let { note ->
+        TagDialog(
+            note = note,
+            allTags = noteStore.allTags(),
+            dark = dark,
+            draft = tagDraft,
+            onDraftChange = { tagDraft = it },
+            onToggleTag = { tag ->
+                toggleTag(note, tag)
+                // 重新取回最新对象，让弹窗里的勾选状态立刻刷新
+                tagTarget = noteStore.snapshot().firstOrNull { it.id == note.id } ?: note
+            },
+            onDismiss = { tagTarget = null },
+        )
+    }
+
+    // 自定义主题色取色器
+    if (colorPickerOpen) {
+        ColorPickerDialog(
+            dark = dark,
+            initial = customAccent,
+            onPick = { value ->
+                onCustomAccentChange(value)
+                onThemeColorChange(AppPalettes.CUSTOM_KEY)
+                colorPickerOpen = false
+            },
+            onDismiss = { colorPickerOpen = false },
+        )
+    }
+
+    // 清空回收站确认
+    if (confirmEmptyTrash) {
+        AlertDialog(
+            onDismissRequest = { confirmEmptyTrash = false },
+            title = { Text("清空回收站？") },
+            text = { Text("其中 ${trashNotes.size} 条记录及语音文件将被永久删除，不可恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    noteStore.emptyTrash()
+                    confirmEmptyTrash = false
+                    refreshData()
+                    Toast.makeText(context, "回收站已清空", Toast.LENGTH_SHORT).show()
+                }) { Text("清空", color = Color(0xFFE64340)) }
+            },
+            dismissButton = { TextButton(onClick = { confirmEmptyTrash = false }) { Text("取消") } },
+        )
+    }
+
     // 再次编辑
     pendingEdit?.let { note ->
         AlertDialog(
@@ -1205,9 +1472,10 @@ private fun NoteScreenContent(
                     )
                     Spacer(Modifier.height(6.dp))
                     TextButton(onClick = {
-                        noteStore.delete(note.id)
+                        noteStore.moveToTrash(note.id)
                         refreshNotes()
                         pendingEdit = null
+                        Toast.makeText(context, "已移入回收站", Toast.LENGTH_SHORT).show()
                     }) { Text("删除这条记录", color = Color(0xFFE64340)) }
                 }
             },
@@ -1230,19 +1498,20 @@ private fun NoteScreenContent(
             title = { Text("删除这条记录？") },
             text = {
                 Text(
-                    note.text.take(80) + if (note.hasAudio) "\n（同时删除本地语音文件）" else "",
+                    note.text.take(80) + "\n（移入回收站，30 天后自动清除，期间可恢复）",
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
-                    noteStore.delete(note.id)
+                    noteStore.moveToTrash(note.id)
                     refreshNotes()
                     if (playingPath == note.audioPath) {
                         audioPlayer.stop()
                         playingPath = null
                     }
                     pendingDelete = null
-                }) { Text("删除") }
+                    Toast.makeText(context, "已移入回收站", Toast.LENGTH_SHORT).show()
+                }) { Text("移入回收站") }
             },
             dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } },
         )
@@ -1252,13 +1521,13 @@ private fun NoteScreenContent(
     if (confirmBatchDelete) {
         AlertDialog(
             onDismissRequest = { confirmBatchDelete = false },
-            title = { Text("删除 ${selectedIds.size} 条记录？") },
-            text = { Text("所选记录及其本地语音文件将被永久删除，不可恢复。") },
+            title = { Text("移入回收站 ${selectedIds.size} 条？") },
+            text = { Text("所选记录将进入回收站，30 天后自动清除，期间可在设置里恢复。") },
             confirmButton = {
                 TextButton(onClick = {
                     confirmBatchDelete = false
                     deleteSelected()
-                }) { Text("删除", color = Color(0xFFE64340)) }
+                }) { Text("移入回收站", color = Color(0xFFE64340)) }
             },
             dismissButton = { TextButton(onClick = { confirmBatchDelete = false }) { Text("取消") } },
         )
@@ -1276,6 +1545,20 @@ private fun NoteScreenContent(
             onHeroPinnedChange = onHeroPinnedChange,
             themeColor = themeColor,
             onThemeColorChange = onThemeColorChange,
+            customAccent = customAccent,
+            onCustomAccentChange = onCustomAccentChange,
+            onCustomColor = { colorPickerOpen = true },
+            trashCount = trashNotes.size,
+            onOpenTrash = {
+                trashNotes = noteStore.trash()
+                showSettings = false
+                trashOpen = true
+            },
+            onExport = {
+                val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmm", java.util.Locale.getDefault()).format(java.util.Date())
+                exportLauncher.launch("随手说备份_$stamp.zip")
+            },
+            onImport = { importLauncher.launch(arrayOf("application/zip", "*/*")) },
             stats = dataStats,
             notesFilePath = noteStore.notesFilePath,
             recordingsDirPath = noteStore.recordingsDirPath,
@@ -1514,6 +1797,13 @@ private fun SettingsPage(
     onHeroPinnedChange: (Boolean) -> Unit,
     themeColor: String,
     onThemeColorChange: (String) -> Unit,
+    customAccent: String,
+    onCustomAccentChange: (String) -> Unit,
+    onCustomColor: () -> Unit,
+    trashCount: Int,
+    onOpenTrash: () -> Unit,
+    onExport: () -> Unit,
+    onImport: () -> Unit,
     stats: com.liweiwen.voicenotes.data.StorageStats,
     notesFilePath: String,
     recordingsDirPath: String,
@@ -1588,6 +1878,24 @@ private fun SettingsPage(
                     }
                 }
                 Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                ) {
+                    TextButton(onClick = onOpenTrash) {
+                        Text(
+                            if (trashCount > 0) "回收站 ($trashCount)" else "回收站",
+                            color = if (dark) AccentBright else Accent,
+                        )
+                    }
+                    TextButton(onClick = onExport) {
+                        Text("导出备份", color = if (dark) AccentBright else Accent)
+                    }
+                    TextButton(onClick = onImport) {
+                        Text("导入恢复", color = if (dark) AccentBright else Accent)
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
                 TextButton(onClick = onClearAudio) {
                     Text("清除语音文件（保留文字）", color = if (dark) Color(0xFFE8B04B) else Color(0xFFB8860B))
                 }
@@ -1643,6 +1951,47 @@ private fun SettingsPage(
                                 color = if (selected) (if (dark) AccentBright else Accent) else subColor,
                             )
                         }
+                    }
+                    // 第六个：自选颜色。外圈彩虹渐变，内圈显示当前选中的自定义色
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        val selected = themeColor == AppPalettes.CUSTOM_KEY
+                        val customColor = runCatching {
+                            Color(android.graphics.Color.parseColor(if (customAccent.isBlank()) "#00A88C" else customAccent))
+                        }.getOrDefault(Color(0xFF00A88C))
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.sweepGradient(
+                                        listOf(
+                                            Color(0xFFFF5252), Color(0xFFFFD740), Color(0xFF69F0AE),
+                                            Color(0xFF40C4FF), Color(0xFF7C4DFF), Color(0xFFFF5252),
+                                        ),
+                                    ),
+                                )
+                                .border(
+                                    if (selected) 2.5.dp else 1.dp,
+                                    if (selected) (if (dark) Color.White else Color(0xFF222222)) else Color.Transparent,
+                                    CircleShape,
+                                )
+                                .clickable { onCustomColor() },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Box(Modifier.size(22.dp).clip(CircleShape).background(customColor))
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "自选",
+                            fontSize = 10.sp,
+                            color = if (selected) (if (dark) AccentBright else Accent) else subColor,
+                        )
+                    }
+                }
+                if (themeColor == AppPalettes.CUSTOM_KEY) {
+                    Spacer(Modifier.height(6.dp))
+                    TextButton(onClick = onCustomColor) {
+                        Text("调整自选颜色", color = if (dark) AccentBright else Accent)
                     }
                 }
                 Spacer(Modifier.height(12.dp))
@@ -1783,9 +2132,12 @@ private fun NoteActionMenu(
     note: com.liweiwen.voicenotes.data.Note,
     dark: Boolean,
     transcribing: Boolean,
+    ttsSpeaking: Boolean,
     onDismiss: () -> Unit,
     onPlay: (Float) -> Unit,
     onTranscribe: () -> Unit,
+    onRead: () -> Unit,
+    onTag: () -> Unit,
     onCopy: () -> Unit,
     onEdit: () -> Unit,
     onMultiSelect: () -> Unit,
@@ -1800,6 +2152,7 @@ private fun NoteActionMenu(
             .clip(RoundedCornerShape(50))
             .background(menuBg)
             .border(1.dp, if (dark) Color(0x2AFFFFFF) else Color(0x16000000), RoundedCornerShape(50))
+            .horizontalScroll(rememberScrollState())
             .padding(horizontal = 4.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1818,7 +2171,9 @@ private fun NoteActionMenu(
         if (note.text.isNotBlank() && note.text != "[语音消息]") {
             MenuItem(AppIcons.ContentCopy, "复制", accent, onClick = onCopy)
             MenuItem(Icons.Default.Edit, "编辑", accent, onClick = onEdit)
+            MenuItem(AppIcons.VolumeUp, if (ttsSpeaking) "停止" else "朗读", accent, onClick = onRead)
         }
+        MenuItem(AppIcons.Label, "标签", accent, onClick = onTag)
         MenuItem(AppIcons.SelectAll, "多选", accent, onClick = onMultiSelect)
         MenuItem(Icons.Default.Delete, "删除", danger, onClick = onDelete)
     }
@@ -1857,4 +2212,321 @@ private fun formatBytes(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024f)
     else -> "%.1f MB".format(bytes / (1024f * 1024f))
+}
+
+/** 标签筛选胶囊：选中时用主题色淡底，未选中时低调灰色。 */
+@Composable
+private fun TagChip(text: String, selected: Boolean, dark: Boolean, onClick: () -> Unit) {
+    val accent = if (dark) AccentBright else Accent
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (selected) accent.copy(alpha = 0.18f) else if (dark) Color(0x14FFFFFF) else Color(0x0D000000))
+            .border(1.dp, if (selected) accent.copy(alpha = 0.5f) else Color.Transparent, RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Text(
+            text,
+            fontSize = 12.sp,
+            maxLines = 1,
+            color = if (selected) accent else if (dark) Color(0xFF9FB3B0) else Color(0xFF777777),
+        )
+    }
+}
+
+/** 时间轴视图：按日期分组，日期标题吸顶，组内记录仍由调用方统一渲染。 */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun TimelineNotes(
+    notes: List<Note>,
+    renderNote: @Composable (Note) -> Unit,
+    showHero: Boolean,
+    hero: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val groups = notes.groupBy { dayKey(it.time) }.toList()
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(top = 12.dp, bottom = 116.dp),
+    ) {
+        if (showHero) {
+            item(key = "timeline_hero") { hero() }
+        }
+        groups.forEach { (day, dayNotes) ->
+            item(key = "day_$day") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
+                        .padding(horizontal = 20.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Spacer(
+                        Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(LocalPalette.current.accent),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        dayLabel(day),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+            items(dayNotes, key = { it.id }) { note -> renderNote(note) }
+        }
+    }
+}
+
+private fun dayKey(time: Long): String =
+    java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date(time))
+
+private fun dayLabel(key: String): String {
+    val fmt = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+    val today = fmt.format(java.util.Date())
+    val yesterday = fmt.format(java.util.Date(System.currentTimeMillis() - 24L * 60 * 60 * 1000))
+    val md = java.text.SimpleDateFormat("M月d日", java.util.Locale.getDefault())
+        .format(runCatching { fmt.parse(key) }.getOrNull() ?: java.util.Date())
+    return when (key) {
+        today -> "今天 · $md"
+        yesterday -> "昨天 · $md"
+        else -> md
+    }
+}
+
+/** 回收站：恢复、彻底删除、清空。全部是本机操作，不联网。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TrashPage(
+    dark: Boolean,
+    notes: List<Note>,
+    onBack: () -> Unit,
+    onRestore: (String) -> Unit,
+    onDeleteForever: (String) -> Unit,
+    onEmpty: () -> Unit,
+) {
+    val surface = if (dark) SurfaceDark else SurfaceLight
+    val background = if (dark) BgDark else BgLight
+    val textColor = if (dark) Color(0xFFECECEC) else Color(0xFF222222)
+    val subColor = if (dark) Color(0xFF8A8A8A) else Color(0xFF999999)
+    val accent = if (dark) AccentBright else Accent
+    Scaffold(
+        containerColor = background,
+        topBar = {
+            TopAppBar(
+                title = { Text("回收站", fontSize = 18.sp, fontWeight = FontWeight.Medium) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = textColor)
+                    }
+                },
+                actions = {
+                    if (notes.isNotEmpty()) {
+                        TextButton(onClick = onEmpty) { Text("清空", color = Color(0xFFE64340)) }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = surface, titleContentColor = textColor),
+            )
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .background(background),
+        ) {
+            Text(
+                "删除的记录保留 30 天，期间可恢复；过期后自动清除。",
+                fontSize = 12.sp,
+                color = subColor,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            )
+            if (notes.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("回收站是空的", fontSize = 15.sp, color = subColor)
+                }
+            } else {
+                LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)) {
+                    items(notes, key = { it.id }) { note ->
+                        CardBox(if (dark) CardDark else Color.White) {
+                            Column(Modifier.padding(14.dp)) {
+                                Text(
+                                    formatRecordTime(note.time) + " 删除",
+                                    fontSize = 11.sp,
+                                    color = subColor,
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    note.text.take(160),
+                                    fontSize = 14.sp,
+                                    color = textColor,
+                                    maxLines = 3,
+                                )
+                                if (note.tags.isNotEmpty()) {
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        note.tags.joinToString("   ") { "#$it" },
+                                        fontSize = 11.sp,
+                                        color = accent,
+                                    )
+                                }
+                                Spacer(Modifier.height(4.dp))
+                                Row {
+                                    TextButton(onClick = { onRestore(note.id) }) {
+                                        Text("恢复", color = accent)
+                                    }
+                                    TextButton(onClick = { onDeleteForever(note.id) }) {
+                                        Text("彻底删除", color = Color(0xFFE64340))
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 标签编辑弹窗：已有标签点一下切换，输入框可添加新标签。 */
+@Composable
+private fun TagDialog(
+    note: Note,
+    allTags: List<String>,
+    dark: Boolean,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    onToggleTag: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val accent = if (dark) AccentBright else Accent
+    val subColor = if (dark) Color(0xFF8A8A8A) else Color(0xFF999999)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("给这条记录加标签") },
+        text = {
+            Column {
+                Text("点选可添加或取消", fontSize = 12.sp, color = subColor)
+                Spacer(Modifier.height(8.dp))
+                if (allTags.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                    ) {
+                        allTags.forEach { tag ->
+                            val on = tag in note.tags
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(if (on) accent.copy(alpha = 0.18f) else if (dark) Color(0x14FFFFFF) else Color(0x0D000000))
+                                    .border(1.dp, if (on) accent else Color.Transparent, RoundedCornerShape(50))
+                                    .clickable { onToggleTag(tag) }
+                                    .padding(horizontal = 11.dp, vertical = 6.dp),
+                            ) {
+                                Text(tag, fontSize = 12.sp, color = if (on) accent else subColor)
+                            }
+                            Spacer(Modifier.width(6.dp))
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = onDraftChange,
+                    label = { Text("新标签") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        IconButton(onClick = {
+                            if (draft.isNotBlank()) {
+                                onToggleTag(draft.trim())
+                                onDraftChange("")
+                            }
+                        }) {
+                            Icon(Icons.Default.Check, contentDescription = "添加标签", tint = accent)
+                        }
+                    },
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "当前标签：${note.tags.joinToString("、").ifEmpty { "无" }}",
+                    fontSize = 11.sp,
+                    color = subColor,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
+    )
+}
+
+/** 自定义主题色：色相 + 鲜艳度两个滑条，实时预览，确认后写回设置。 */
+@Composable
+private fun ColorPickerDialog(
+    dark: Boolean,
+    initial: String,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val initialHsv = remember {
+        val hsv = FloatArray(3)
+        val fallback = android.graphics.Color.parseColor("#00A88C")
+        val base = runCatching {
+            android.graphics.Color.parseColor(if (initial.isBlank()) "#00A88C" else initial)
+        }.getOrDefault(fallback)
+        android.graphics.Color.colorToHSV(base, hsv)
+        hsv
+    }
+    var hue by remember { mutableStateOf(initialHsv[0]) }
+    var saturation by remember { mutableStateOf(initialHsv[1].coerceIn(0.3f, 1f)) }
+    val argb = android.graphics.Color.HSVToColor(floatArrayOf(hue, saturation, 0.96f))
+    val preview = Color(argb)
+    val subColor = if (dark) Color(0xFF8A8A8A) else Color(0xFF777777)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("自选主题色") },
+        text = {
+            Column {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(72.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(preview),
+                )
+                Spacer(Modifier.height(14.dp))
+                Text("色相", fontSize = 12.sp, color = subColor)
+                Slider(
+                    value = hue,
+                    valueRange = 0f..360f,
+                    onValueChange = { hue = it },
+                    colors = androidx.compose.material3.SliderDefaults.colors(
+                        activeTrackColor = preview,
+                        thumbColor = preview,
+                    ),
+                )
+                Text("鲜艳度", fontSize = 12.sp, color = subColor)
+                Slider(
+                    value = saturation,
+                    valueRange = 0.3f..1f,
+                    onValueChange = { saturation = it },
+                    colors = androidx.compose.material3.SliderDefaults.colors(
+                        activeTrackColor = preview,
+                        thumbColor = preview,
+                    ),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onPick("#" + "%08X".format(argb)) }) {
+                Text("使用这个颜色")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
