@@ -48,7 +48,13 @@ import kotlin.math.sin
  * 手势判定仍在输入栏完成，这里只负责视觉反馈。
  */
 @Composable
-fun RecordingPanel(mode: SlideMode, liveText: String, elapsedSec: Int, dark: Boolean) {
+fun RecordingPanel(
+    mode: SlideMode,
+    inputMode: InputMode,
+    liveText: String,
+    elapsedSec: Int,
+    dark: Boolean,
+) {
     val transition = rememberInfiniteTransition(label = "recording")
     val ripple by transition.animateFloat(
         initialValue = 0f,
@@ -184,7 +190,7 @@ fun RecordingPanel(mode: SlideMode, liveText: String, elapsedSec: Int, dark: Boo
                     when (mode) {
                         SlideMode.CANCEL -> "松开取消"
                         SlideMode.EDIT -> "松开转文字"
-                        SlideMode.CENTER -> "松手保存语音"
+                        SlideMode.CENTER -> if (inputMode == InputMode.VOICE) "松手保存语音" else "松手转成文字"
                     },
                     color = Color.White.copy(alpha = 0.88f),
                     fontSize = 11.sp,
@@ -205,7 +211,11 @@ fun RecordingPanel(mode: SlideMode, liveText: String, elapsedSec: Int, dark: Boo
             ActionPill("语音转文字", editColor, editScale)
         }
         Text(
-            "左滑取消 · 右滑转文字 · 原地松手存语音",
+            if (inputMode == InputMode.VOICE) {
+                "左滑取消 · 右滑转文字 · 原地松手存语音"
+            } else {
+                "左滑取消 · 右滑转文字可编辑 · 原地松手转文字"
+            },
             color = subColor,
             fontSize = 11.sp,
             modifier = Modifier

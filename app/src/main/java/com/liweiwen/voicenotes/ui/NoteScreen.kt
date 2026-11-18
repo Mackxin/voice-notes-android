@@ -10,6 +10,15 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -49,6 +58,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -80,6 +90,7 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -116,6 +127,13 @@ import java.io.File
 import kotlin.math.hypot
 
 enum class SlideMode { CENTER, CANCEL, EDIT }
+
+/**
+ * 输入栏两种模式（对齐微信 8.0.80）：
+ * - TRANSCRIBE「可按住转文字」：点按打字；长按语音转文字；左滑取消；右滑转成文字可编辑。
+ * - VOICE「按住说话」：长按录音，松手直接存语音文件；左滑取消；右滑语音转文字。
+ */
+enum class InputMode { TRANSCRIBE, VOICE }
 
 private const val LONG_PRESS_MS = 260L
 private val Accent = Color(0xFF00A88C)
@@ -199,10 +217,10 @@ private fun NoteScreenContent(
 
     var notes by remember { mutableStateOf(noteStore.all()) }
     var draft by remember { mutableStateOf("") }
-    // 默认语音模式：输入栏是纯文本按钮，不含可聚焦的 EditText，长按绝不会弹键盘。
-    // 短按文字区切到打字模式；点左侧声波按钮进入「语音待命」，占位文字变「按住说话」。
+    // 输入栏默认「可按住转文字」（微信 8.0.80 同款）：不含可聚焦的 EditText，长按不弹键盘。
+    // textMode 才是真正打字；inputMode 在「可按住转文字 / 按住说话」之间由左下角按钮切换。
     var textMode by remember { mutableStateOf(false) }
-    var voiceArmed by remember { mutableStateOf(false) }
+    var inputMode by remember { mutableStateOf(InputMode.TRANSCRIBE) }
     var status by remember { mutableStateOf("") }
     var recording by remember { mutableStateOf(false) }
     var slideMode by remember { mutableStateOf(SlideMode.CENTER) }
@@ -438,7 +456,7 @@ private fun NoteScreenContent(
         recorderRef.value = recorder
         busy = false
         status = if (connected) {
-            "正在录音 · 右滑转文字，左滑取消"
+            "正在录音 · 左滑取消，右滑转文字"
         } else {
             "正在录音 · 右滑可试转文字（当前未连接）"
         }
@@ -448,6 +466,7 @@ private fun NoteScreenContent(
         val recorder = recorderRef.value ?: return
         val asr = asrRef.value
         val wavFile = currentAudioFile
+        val modeAtStart = inputMode // 以按下时的模式为准，避免录音过程中切换造成歧义
         recorderRef.value = null
         asrRef.value = null
         currentAudioFile = null
@@ -464,8 +483,8 @@ private fun NoteScreenContent(
             return
         }
 
-        if (mode == SlideMode.CENTER) {
-            // 语音待命下原地松手：只保存语音文件，不做识别
+        // 「按住说话」+ 原地松手：只保存语音文件，不转文字
+        if (modeAtStart == InputMode.VOICE && mode == SlideMode.CENTER) {
             asr?.cancel()
             saveNote("", true, wavFile?.absolutePath, duration)
             recording = false
@@ -476,6 +495,9 @@ private fun NoteScreenContent(
             return
         }
 
+        // 其余情况都要转文字：
+        // - 可按住转文字 + 原地松手 → 直接保存文字记录
+        // - 可按住转文字 + 右滑 / 按住说话 + 右滑 → 转成文字进编辑框
         busy = true
         status = "正在转文字…"
         val result: AsrResult = if (asr != null) {
@@ -496,6 +518,7 @@ private fun NoteScreenContent(
         }
 
         if (mode == SlideMode.EDIT) {
+            // 右滑：转成文字进入编辑框，可改后再保存；语音文件一并暂存
             draft = spoken
             textMode = true
             wavFile?.let { pendingAudio = it.absolutePath to duration }
@@ -505,14 +528,17 @@ private fun NoteScreenContent(
                 "已转成文字，可编辑后点发送"
             }
         } else {
-            saveNote(spoken, true, wavFile?.absolutePath, duration)
-            status = if (result is AsrResult.Failure) {
-                "语音已保存到本机（转写失败）"
+            // 可按住转文字 + 原地松手：直接记一条文字记录
+            if (spoken.isBlank()) wavFile?.delete()
+            saveNote(spoken, true, if (spoken.isBlank()) null else wavFile?.absolutePath, duration)
+            status = if (spoken.isBlank()) {
+                "没听清，请再试一次"
             } else {
-                "已记下（含语音）"
+                "已转成文字并记下"
             }
         }
         liveText = ""
+        elapsedSec = 0
     }
 
     LaunchedEffect(notes.size) {
@@ -682,7 +708,6 @@ private fun NoteScreenContent(
                         onPaste = {
                             draft = pasted
                             clipboardText = null
-                            voiceArmed = false
                             textMode = true
                             status = ""
                         },
@@ -691,7 +716,22 @@ private fun NoteScreenContent(
                     Spacer(Modifier.height(8.dp))
                 }
                 val pillBg = if (dark) Color(0x141B2D) else Color(0xFFFFFFFF)
-                val waveCircleBg = if (dark) AccentBright.copy(alpha = 0.16f) else Accent.copy(alpha = 0.10f)
+                // 模式强调色平滑过渡：可按住转文字=薄荷绿，按住说话=紫罗兰
+                val modeAccent by animateColorAsState(
+                    targetValue = if (inputMode == InputMode.TRANSCRIBE) {
+                        if (dark) AccentBright else Accent
+                    } else {
+                        if (dark) Color(0xFFB4A5FF) else Secondary
+                    },
+                    animationSpec = tween(300),
+                    label = "modeAccent",
+                )
+                val modeIconRotation by animateFloatAsState(
+                    targetValue = if (inputMode == InputMode.TRANSCRIBE) 0f else 180f,
+                    animationSpec = tween(340),
+                    label = "modeIconRotation",
+                )
+                val waveCircleBg = modeAccent.copy(alpha = if (dark) 0.16f else 0.11f)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -712,18 +752,19 @@ private fun NoteScreenContent(
                         thresholdPx = slideThresholdPx,
                         onTap = { x ->
                             if (x <= waveZonePx) {
-                                // 点左下角声波按钮：语音待命 ⇄ 打字模式，来回切换
-                                voiceArmed = !voiceArmed
-                                if (voiceArmed) {
-                                    textMode = false
-                                    status = "按住输入栏，松手保存语音"
+                                // 左下角按钮：来回切换「可按住转文字 ⇄ 按住说话」
+                                if (textMode) {
+                                    exitTextMode()
                                 } else {
-                                    textMode = true
-                                    status = ""
+                                    inputMode = if (inputMode == InputMode.TRANSCRIBE) {
+                                        InputMode.VOICE
+                                    } else {
+                                        InputMode.TRANSCRIBE
+                                    }
                                 }
+                                status = ""
                             } else {
                                 // 点文字区：切到打字模式，由 LaunchedEffect 聚焦并弹键盘
-                                voiceArmed = false
                                 textMode = true
                                 status = ""
                             }
@@ -750,16 +791,35 @@ private fun NoteScreenContent(
                                 .size(40.dp)
                                 .clip(CircleShape)
                                 .background(waveCircleBg)
+                                .rotate(modeIconRotation)
                                 .then(
                                     if (textMode) Modifier.clickable {
                                         exitTextMode()
-                                        voiceArmed = true
-                                        status = "按住输入栏，松手保存语音"
+                                        status = ""
                                     } else Modifier
                                 ),
                             contentAlignment = Alignment.Center,
                         ) {
-                            WaveGlyph(color = if (dark) AccentBright else Accent, modifier = Modifier.size(22.dp))
+                            // 图标随模式淡入淡出：声波=转文字，话筒=按住说话
+                            AnimatedContent(
+                                targetState = inputMode,
+                                transitionSpec = {
+                                    (fadeIn(animationSpec = tween(200)) togetherWith
+                                        fadeOut(animationSpec = tween(200)))
+                                },
+                                label = "modeIcon",
+                            ) { mode ->
+                                if (mode == InputMode.TRANSCRIBE) {
+                                    WaveGlyph(color = modeAccent, modifier = Modifier.size(21.dp))
+                                } else {
+                                    Icon(
+                                        Icons.Default.Mic,
+                                        contentDescription = "按住说话",
+                                        tint = modeAccent,
+                                        modifier = Modifier.size(21.dp),
+                                    )
+                                }
+                            }
                         }
                         Spacer(Modifier.width(8.dp))
                         if (textMode) {
@@ -785,7 +845,7 @@ private fun NoteScreenContent(
                                     disabledContainerColor = Color.Transparent,
                                     focusedIndicatorColor = Color.Transparent,
                                     unfocusedIndicatorColor = Color.Transparent,
-                                    cursorColor = Accent,
+                                    cursorColor = modeAccent,
                                     focusedTextColor = textColor,
                                     unfocusedTextColor = textColor,
                                 ),
@@ -797,14 +857,28 @@ private fun NoteScreenContent(
                                     .padding(end = 14.dp),
                                 contentAlignment = Alignment.CenterStart,
                             ) {
-                                Text(
-                                    text = if (draft.isBlank()) {
-                                        if (voiceArmed) "按住说话" else "点此打字"
-                                    } else draft,
-                                    fontSize = 14.sp,
-                                    color = if (draft.isBlank()) subColor else textColor,
-                                    maxLines = 1,
-                                )
+                                val placeholderText = if (draft.isNotBlank()) {
+                                    draft
+                                } else if (inputMode == InputMode.TRANSCRIBE) {
+                                    "可按住 转文字"
+                                } else {
+                                    "按住说话"
+                                }
+                                AnimatedContent(
+                                    targetState = placeholderText,
+                                    transitionSpec = {
+                                        (fadeIn(animationSpec = tween(220)) + slideInHorizontally { it / 4 }) togetherWith
+                                            (fadeOut(animationSpec = tween(160)) + slideOutHorizontally { -it / 4 })
+                                    },
+                                    label = "placeholder",
+                                ) { txt ->
+                                    Text(
+                                        text = txt,
+                                        fontSize = 14.sp,
+                                        color = if (draft.isBlank()) subColor else textColor,
+                                        maxLines = 1,
+                                    )
+                                }
                             }
                         }
                     }
@@ -814,11 +888,11 @@ private fun NoteScreenContent(
                             modifier = Modifier
                                 .size(44.dp)
                                 .clip(CircleShape)
-                                .background(Accent.copy(alpha = 0.14f))
+                                .background(modeAccent.copy(alpha = 0.16f))
                                 .clickable { sendDraft() },
                             contentAlignment = Alignment.Center,
                         ) {
-                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "保存", tint = Accent, modifier = Modifier.size(20.dp))
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "保存", tint = modeAccent, modifier = Modifier.size(20.dp))
                         }
                     }
                 }
@@ -844,6 +918,7 @@ private fun NoteScreenContent(
             if (recording) {
                 RecordingPanel(
                     mode = slideMode,
+                    inputMode = inputMode,
                     liveText = liveText,
                     elapsedSec = elapsedSec,
                     dark = dark,
@@ -1014,7 +1089,7 @@ private fun HomeHero(
                 )
                 Spacer(Modifier.height(3.dp))
                 Text(
-                    "按住说话，松手存语音；右滑转文字",
+                    "可按住转文字 · 按住说话，两种模式随心切",
                     fontSize = 11.sp,
                     color = if (dark) Color(0xFF9FB3B0) else Color(0xFF5F7774),
                 )
