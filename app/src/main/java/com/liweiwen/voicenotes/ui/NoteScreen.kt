@@ -12,10 +12,14 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -810,8 +814,14 @@ private fun NoteScreenContent(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.Center)
-                        .pointerInput(textMode) {
-                            detectTapGestures { if (textMode) exitTextMode() }
+                        .pointerInput(textMode, searchOpen) {
+                            detectTapGestures {
+                                if (textMode) exitTextMode()
+                                if (searchOpen) {
+                                    focusManager.clearFocus()
+                                    keyboardController?.hide()
+                                }
+                            }
                         },
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
@@ -837,8 +847,14 @@ private fun NoteScreenContent(
                     reverseLayout = true,
                     modifier = Modifier
                         .fillMaxSize()
-                        .pointerInput(textMode) {
-                            detectTapGestures { if (textMode) exitTextMode() }
+                        .pointerInput(textMode, searchOpen) {
+                            detectTapGestures {
+                                if (textMode) exitTextMode()
+                                if (searchOpen) {
+                                    focusManager.clearFocus()
+                                    keyboardController?.hide()
+                                }
+                            }
                         },
                     contentPadding = PaddingValues(top = 12.dp, bottom = 116.dp),
                 ) {
@@ -945,33 +961,37 @@ private fun NoteScreenContent(
                 }
                 val pillBg = if (dark) Color(0x141B2D) else Color(0xFFFFFFFF)
                 // 模式强调色平滑过渡：可按住转文字=薄荷绿，按住说话=紫罗兰
+                val smoothSpring = spring<Float>(
+                    stiffness = Spring.StiffnessMedium,
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                )
                 val modeAccent by animateColorAsState(
                     targetValue = if (inputMode == InputMode.TRANSCRIBE) {
                         if (dark) AccentBright else Accent
                     } else {
                         if (dark) Color(0xFFB4A5FF) else Secondary
                     },
-                    animationSpec = tween(300),
+                    animationSpec = spring(stiffness = Spring.StiffnessMedium, dampingRatio = Spring.DampingRatioNoBouncy),
                     label = "modeAccent",
                 )
                 val modeIconRotation by animateFloatAsState(
                     targetValue = if (inputMode == InputMode.TRANSCRIBE) 0f else 180f,
-                    animationSpec = tween(340),
+                    animationSpec = smoothSpring,
                     label = "modeIconRotation",
                 )
                 val waveCircleBg = modeAccent.copy(alpha = if (dark) 0.16f else 0.11f)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .shadow(12.dp, RoundedCornerShape(24.dp), clip = true)
-                        .clip(RoundedCornerShape(24.dp))
+                        .shadow(12.dp, RoundedCornerShape(22.dp), clip = true)
+                        .clip(RoundedCornerShape(22.dp))
                         .background(surface)
                         .border(
                             1.dp,
                             if (dark) Color(0x22FFFFFF) else Color(0x12000000),
-                            RoundedCornerShape(24.dp),
+                            RoundedCornerShape(22.dp),
                         )
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                        .padding(horizontal = 8.dp, vertical = 5.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     // 录音手势：仅语音模式套用。打字模式让 TextField 独占触摸，
@@ -1011,16 +1031,16 @@ private fun NoteScreenContent(
                     Row(
                         modifier = Modifier
                             .weight(1f)
-                            .height(52.dp)
-                            .clip(RoundedCornerShape(26.dp))
+                            .height(46.dp)
+                            .clip(RoundedCornerShape(23.dp))
                             .background(pillBg)
                             .then(if (textMode) Modifier else recordModifier),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box(
                             modifier = Modifier
-                                .padding(start = 6.dp)
-                                .size(40.dp)
+                                .padding(start = 5.dp)
+                                .size(36.dp)
                                 .clip(CircleShape)
                                 .background(waveCircleBg)
                                 .rotate(modeIconRotation)
@@ -1036,8 +1056,8 @@ private fun NoteScreenContent(
                             AnimatedContent(
                                 targetState = inputMode,
                                 transitionSpec = {
-                                    (fadeIn(animationSpec = tween(200)) togetherWith
-                                        fadeOut(animationSpec = tween(200)))
+                                    (fadeIn(animationSpec = tween(160)) + scaleIn(initialScale = 0.6f, animationSpec = smoothSpring)) togetherWith
+                                        (fadeOut(animationSpec = tween(120)) + scaleOut(targetScale = 0.6f, animationSpec = smoothSpring))
                                 },
                                 label = "modeIcon",
                             ) { mode ->
@@ -1060,7 +1080,7 @@ private fun NoteScreenContent(
                                 onValueChange = { draft = it },
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(52.dp)
+                                    .height(46.dp)
                                     .focusRequester(clipFocusRequester),
                                 placeholder = { Text("输入文字…", fontSize = 14.sp, color = subColor, maxLines = 1) },
                                 singleLine = true,
@@ -1099,8 +1119,8 @@ private fun NoteScreenContent(
                                 AnimatedContent(
                                     targetState = placeholderText,
                                     transitionSpec = {
-                                        (fadeIn(animationSpec = tween(220)) + slideInHorizontally { it / 4 }) togetherWith
-                                            (fadeOut(animationSpec = tween(160)) + slideOutHorizontally { -it / 4 })
+                                        (fadeIn(animationSpec = tween(180)) + slideInHorizontally(animationSpec = spring<androidx.compose.ui.unit.IntOffset>(stiffness = Spring.StiffnessMedium, dampingRatio = Spring.DampingRatioNoBouncy)) { it / 5 }) togetherWith
+                                            (fadeOut(animationSpec = tween(120)) + slideOutHorizontally(animationSpec = spring<androidx.compose.ui.unit.IntOffset>(stiffness = Spring.StiffnessMedium, dampingRatio = Spring.DampingRatioNoBouncy)) { -it / 5 })
                                     },
                                     label = "placeholder",
                                 ) { txt ->
@@ -1118,7 +1138,7 @@ private fun NoteScreenContent(
                         Spacer(Modifier.width(8.dp))
                         Box(
                             modifier = Modifier
-                                .size(44.dp)
+                                .size(40.dp)
                                 .clip(CircleShape)
                                 .background(modeAccent.copy(alpha = 0.16f))
                                 .clickable { sendDraft() },
@@ -1705,7 +1725,7 @@ private fun PathLine(
     }
 }
 
-/** 长按记录后就地弹出的紧凑操作菜单：锚定在气泡旁，字号更小、无遮罩。 */
+/** 长按记录后就地弹出的横向操作条：图标+文字横排，高度小、不遮键盘、不会超出屏幕底部。 */
 @Composable
 private fun NoteActionMenu(
     note: com.liweiwen.voicenotes.data.Note,
@@ -1720,25 +1740,24 @@ private fun NoteActionMenu(
     onDelete: () -> Unit,
 ) {
     val accent = if (dark) AccentBright else Accent
-    val textColor = if (dark) Color(0xFFECECEC) else Color(0xFF222222)
     val menuBg = if (dark) Color(0xFF243049) else Color(0xFFFFFFFF)
     val danger = Color(0xFFE64340)
 
-    Column(
+    Row(
         modifier = Modifier
-            .width(168.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(menuBg)
-            .border(1.dp, if (dark) Color(0x2AFFFFFF) else Color(0x16000000), RoundedCornerShape(12.dp))
-            .padding(vertical = 4.dp),
+            .border(1.dp, if (dark) Color(0x2AFFFFFF) else Color(0x16000000), RoundedCornerShape(14.dp))
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         if (note.hasAudio) {
             MenuItem(Icons.Default.PlayArrow, "播放", accent) { onPlay(1.0f) }
-            MenuItem(Icons.Default.PlayArrow, "1.5x 播放", accent) { onPlay(1.5f) }
-            MenuItem(Icons.Default.PlayArrow, "2x 播放", accent) { onPlay(2.0f) }
+            MenuItem(Icons.Default.PlayArrow, "1.5x", accent) { onPlay(1.5f) }
+            MenuItem(Icons.Default.PlayArrow, "2x", accent) { onPlay(2.0f) }
             MenuItem(
                 Icons.Default.Edit,
-                if (transcribing) "转文字中…" else "转文字",
+                if (transcribing) "转写中" else "转文字",
                 accent,
                 enabled = !transcribing,
                 onClick = onTranscribe,
@@ -1753,6 +1772,7 @@ private fun NoteActionMenu(
     }
 }
 
+/** 横向操作条里的单个按钮：上图标下文字，紧凑排布。 */
 @Composable
 private fun MenuItem(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -1761,16 +1781,18 @@ private fun MenuItem(
     enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
-    Row(
+    val itemColor = if (enabled) color else color.copy(alpha = 0.4f)
+    Column(
         modifier = Modifier
-            .fillMaxWidth()
+            .width(46.dp)
+            .clip(RoundedCornerShape(10.dp))
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(vertical = 6.dp, horizontal = 2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(icon, contentDescription = null, tint = if (enabled) color else color.copy(alpha = 0.4f), modifier = Modifier.size(15.dp))
-        Spacer(Modifier.width(10.dp))
-        Text(label, fontSize = 12.sp, color = if (enabled) color else color.copy(alpha = 0.4f), maxLines = 1)
+        Icon(icon, contentDescription = null, tint = itemColor, modifier = Modifier.size(17.dp))
+        Spacer(Modifier.height(3.dp))
+        Text(label, fontSize = 10.sp, color = itemColor, maxLines = 1)
     }
 }
 

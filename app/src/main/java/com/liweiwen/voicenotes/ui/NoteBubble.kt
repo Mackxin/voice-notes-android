@@ -153,11 +153,11 @@ fun NoteBubble(
                 if (menuOpen) {
                     val density = LocalDensity.current
                     Popup(
-                        // 气泡贴屏幕右侧，菜单从气泡右缘向左展开，避免超出右边界被裁切
-                        alignment = Alignment.TopEnd,
+                        // 横向操作条：底边对齐气泡底边、向右缘对齐，从气泡上方展开，避免超出屏幕底部被裁
+                        alignment = Alignment.BottomEnd,
                         offset = IntOffset(
                             x = with(density) { (-6).dp.toPx() }.toInt(),
-                            y = with(density) { (-6).dp.toPx() }.toInt(),
+                            y = with(density) { (-8).dp.toPx() }.toInt(),
                         ),
                         onDismissRequest = onDismissMenu,
                         properties = PopupProperties(focusable = true, clippingEnabled = false),
