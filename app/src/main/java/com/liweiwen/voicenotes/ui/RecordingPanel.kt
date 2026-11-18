@@ -193,7 +193,7 @@ fun RecordingPanel(
                         SlideMode.CENTER -> if (inputMode == InputMode.VOICE) "松手保存语音" else "松手转成文字"
                     },
                     color = Color.White.copy(alpha = 0.88f),
-                    fontSize = 11.sp,
+                    fontSize = 14.sp,
                 )
             }
         }
@@ -201,9 +201,9 @@ fun RecordingPanel(
         Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 52.dp)
+                .padding(bottom = 58.dp)
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp),
+                .padding(horizontal = 18.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -217,10 +217,10 @@ fun RecordingPanel(
                 "左滑取消 · 右滑转文字可编辑 · 原地松手转文字"
             },
             color = subColor,
-            fontSize = 11.sp,
+            fontSize = 13.sp,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 22.dp),
+                .padding(bottom = 20.dp),
         )
     }
 }
@@ -230,13 +230,13 @@ private fun ActionPill(label: String, color: Color, scale: Float) {
     Box(
         modifier = Modifier
             .graphicsLayer(scaleX = scale, scaleY = scale)
-            .clip(RoundedCornerShape(40.dp))
-            .background(color.copy(alpha = 0.12f))
-            .border(1.dp, color.copy(alpha = 0.42f), RoundedCornerShape(40.dp))
-            .padding(horizontal = 18.dp, vertical = 11.dp),
+            .clip(RoundedCornerShape(44.dp))
+            .background(color.copy(alpha = 0.16f))
+            .border(2.dp, color.copy(alpha = 0.55f), RoundedCornerShape(44.dp))
+            .padding(horizontal = 28.dp, vertical = 16.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = color, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Text(label, color = color, fontSize = 17.sp, fontWeight = FontWeight.Bold)
     }
 }
 

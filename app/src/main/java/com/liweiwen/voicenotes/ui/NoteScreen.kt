@@ -29,6 +29,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -60,6 +61,7 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -232,6 +234,9 @@ private fun NoteScreenContent(
     var searchQuery by remember { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<Note?>(null) }
     var pendingEdit by remember { mutableStateOf<Note?>(null) }
+    var multiSelect by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf(setOf<String>()) }
+    var confirmBatchDelete by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
     var dataStats by remember { mutableStateOf(noteStore.stats()) }
     var editText by remember { mutableStateOf("") }
@@ -305,6 +310,11 @@ private fun NoteScreenContent(
         dataStats = noteStore.stats()
     }
 
+    fun exitMultiSelect() {
+        multiSelect = false
+        selectedIds = emptySet()
+    }
+
     /** 点击设置页的本机路径，直达系统文件应用里的「随手说本机数据」目录。 */
     fun openPath(path: String, directory: Boolean) {
         val target = File(path)
@@ -354,16 +364,19 @@ private fun NoteScreenContent(
         if (searchOpen) searchFocusRequester.requestFocus()
     }
 
-    // 返回键优先级：设置页 > 搜索 > 打字模式 >（不拦截，交给系统退出）
+    // 返回键优先级：设置页 > 多选 > 搜索 > 打字模式 >（不拦截，交给系统退出）
     BackHandler(enabled = showSettings) {
         showSettings = false
         refreshData()
     }
-    BackHandler(enabled = !showSettings && searchOpen) {
+    BackHandler(enabled = !showSettings && multiSelect) {
+        exitMultiSelect()
+    }
+    BackHandler(enabled = !showSettings && !multiSelect && searchOpen) {
         searchOpen = false
         searchQuery = ""
     }
-    BackHandler(enabled = !showSettings && !searchOpen && textMode) {
+    BackHandler(enabled = !showSettings && !multiSelect && !searchOpen && textMode) {
         exitTextMode()
     }
 
@@ -379,6 +392,33 @@ private fun NoteScreenContent(
 
     fun refreshNotes() {
         notes = noteStore.all()
+    }
+
+    fun toggleSelected(id: String) {
+        selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+    }
+
+    fun copySelected() {
+        val picked = notes.filter { it.id in selectedIds && it.text.isNotBlank() && it.text != "[语音消息]" }
+        if (picked.isEmpty()) {
+            Toast.makeText(context, "所选记录没有可复制的文字", Toast.LENGTH_SHORT).show()
+            return
+        }
+        clipboard.setText(AnnotatedString(picked.joinToString("\n") { it.text }))
+        Toast.makeText(context, "已复制 ${picked.size} 条文字", Toast.LENGTH_SHORT).show()
+        exitMultiSelect()
+    }
+
+    fun deleteSelected() {
+        val removed = notes.filter { it.id in selectedIds }
+        if (playingPath != null && removed.any { it.audioPath == playingPath }) {
+            audioPlayer.stop()
+            playingPath = null
+        }
+        noteStore.deleteMany(selectedIds)
+        refreshNotes()
+        exitMultiSelect()
+        Toast.makeText(context, "已删除 ${removed.size} 条记录", Toast.LENGTH_SHORT).show()
     }
 
     fun saveNote(text: String, fromVoice: Boolean, audioPath: String? = null, durationMs: Long = 0L) {
@@ -587,27 +627,48 @@ private fun NoteScreenContent(
                                 unfocusedTextColor = textColor,
                             ),
                         )
+                    } else if (multiSelect) {
+                        Text("已选 ${selectedIds.size} 项", fontSize = 18.sp, fontWeight = FontWeight.Medium)
                     } else {
                         Text("随手说", fontSize = 18.sp, fontWeight = FontWeight.Medium)
                     }
                 },
                 actions = {
-                    if (!searchOpen) {
-                        IconButton(onClick = { searchOpen = true }) {
-                            Icon(Icons.Default.Search, contentDescription = "搜索记录", tint = textColor)
+                    if (multiSelect) {
+                        IconButton(onClick = {
+                            selectedIds = if (selectedIds.size == visibleNotes.size) emptySet() else visibleNotes.map { it.id }.toSet()
+                        }) {
+                            Icon(Icons.Default.SelectAll, contentDescription = "全选/取消全选", tint = textColor)
                         }
-                    }
-                    IconButton(onClick = {
-                        apiKeyInput = settingsStore.apiKey
-                        workspaceInput = settingsStore.workspaceId
-                        modelInput = settingsStore.model
-                        dataStats = noteStore.stats()
-                        exitTextMode()
-                        searchOpen = false
-                        searchQuery = ""
-                        showSettings = true
-                    }) {
-                        Icon(Icons.Default.Settings, contentDescription = "设置", tint = textColor)
+                        IconButton(onClick = { exitMultiSelect() }) {
+                            Icon(Icons.Default.Close, contentDescription = "退出多选", tint = textColor)
+                        }
+                    } else {
+                        if (!searchOpen) {
+                            IconButton(onClick = {
+                                exitTextMode()
+                                multiSelect = true
+                                selectedIds = emptySet()
+                            }) {
+                                Icon(Icons.Default.SelectAll, contentDescription = "多选", tint = textColor)
+                            }
+                            IconButton(onClick = { searchOpen = true }) {
+                                Icon(Icons.Default.Search, contentDescription = "搜索记录", tint = textColor)
+                            }
+                        }
+                        IconButton(onClick = {
+                            apiKeyInput = settingsStore.apiKey
+                            workspaceInput = settingsStore.workspaceId
+                            modelInput = settingsStore.model
+                            dataStats = noteStore.stats()
+                            exitTextMode()
+                            exitMultiSelect()
+                            searchOpen = false
+                            searchQuery = ""
+                            showSettings = true
+                        }) {
+                            Icon(Icons.Default.Settings, contentDescription = "设置", tint = textColor)
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = surface, titleContentColor = textColor),
@@ -667,6 +728,8 @@ private fun NoteScreenContent(
                             note = note,
                             dark = dark,
                             isPlaying = playingPath == note.audioPath && note.audioPath != null,
+                            multiSelect = multiSelect,
+                            selected = note.id in selectedIds,
                             onPlayToggle = {
                                 val path = note.audioPath
                                 if (path == null) return@NoteBubble
@@ -679,12 +742,20 @@ private fun NoteScreenContent(
                                 }
                             },
                             onClick = {
-                                clipboard.setText(AnnotatedString(note.text))
-                                Toast.makeText(context, "已复制，长按气泡可编辑", Toast.LENGTH_SHORT).show()
+                                if (multiSelect) {
+                                    toggleSelected(note.id)
+                                } else {
+                                    clipboard.setText(AnnotatedString(note.text))
+                                    Toast.makeText(context, "已复制，长按气泡可编辑", Toast.LENGTH_SHORT).show()
+                                }
                             },
                             onLongClick = {
-                                editText = note.text
-                                pendingEdit = note
+                                if (multiSelect) {
+                                    toggleSelected(note.id)
+                                } else {
+                                    editText = note.text
+                                    pendingEdit = note
+                                }
                             },
                         )
                     }
@@ -693,6 +764,38 @@ private fun NoteScreenContent(
                 }
             }
 
+            if (multiSelect) {
+                // 多选操作栏
+                val barAccent = if (dark) AccentBright else Accent
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .shadow(12.dp, RoundedCornerShape(24.dp), clip = true)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(surface)
+                        .border(1.dp, if (dark) Color(0x22FFFFFF) else Color(0x12000000), RoundedCornerShape(24.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                ) {
+                    TextButton(onClick = {
+                        selectedIds = if (selectedIds.size == visibleNotes.size) emptySet() else visibleNotes.map { it.id }.toSet()
+                    }) {
+                        Text(if (selectedIds.size == visibleNotes.size) "取消全选" else "全选", color = barAccent)
+                    }
+                    TextButton(onClick = { copySelected() }) {
+                        Icon(Icons.Default.ContentPaste, contentDescription = null, tint = barAccent, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("复制", color = barAccent)
+                    }
+                    TextButton(onClick = { confirmBatchDelete = true }) {
+                        Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFE64340), modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("删除", color = Color(0xFFE64340))
+                    }
+                }
+            } else {
             // 底部悬浮输入栏 + 剪贴板快贴
             Column(
                 modifier = Modifier
@@ -907,6 +1010,7 @@ private fun NoteScreenContent(
                     )
                 }
             }
+            }
 
             if (busy && !recording) {
                 CircularProgressIndicator(
@@ -985,6 +1089,22 @@ private fun NoteScreenContent(
                 }) { Text("删除") }
             },
             dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } },
+        )
+    }
+
+    // 批量删除确认
+    if (confirmBatchDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmBatchDelete = false },
+            title = { Text("删除 ${selectedIds.size} 条记录？") },
+            text = { Text("所选记录及其本地语音文件将被永久删除，不可恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmBatchDelete = false
+                    deleteSelected()
+                }) { Text("删除", color = Color(0xFFE64340)) }
+            },
+            dismissButton = { TextButton(onClick = { confirmBatchDelete = false }) { Text("取消") } },
         )
     }
 

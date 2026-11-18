@@ -96,6 +96,16 @@ class NoteStore(context: Context) {
         save()
     }
 
+    /** 批量删除记录及其语音文件（多选模式用）。 */
+    fun deleteMany(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        notes.filter { it.id in ids }.forEach { note ->
+            note.audioPath?.let { path -> runCatching { File(path).delete() } }
+        }
+        notes.removeAll { it.id in ids }
+        save()
+    }
+
     fun newAudioFile(): File = File(audioDir, "${UUID.randomUUID()}.wav")
 
     /** 数据管理统计：记录条数、语音文件数、语音占用字节数。 */
