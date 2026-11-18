@@ -171,6 +171,12 @@ app/src/main/java/com/liweiwen/voicenotes/
 # 输出：app/build/outputs/apk/release/app-release.apk
 ```
 
+## 下载与更新
+
+- **最新版本**：v2.1.0 — [GitHub Release](https://github.com/Mackxin/voice-notes-android/releases/tag/v2.1.0)；APK 直链：[voice-notes-v2.1.0-release.apk](https://github.com/Mackxin/voice-notes-android/releases/download/v2.1.0/voice-notes-v2.1.0-release.apk)。
+- **App 内更新**：设置 →「关于与更新」→「检查更新」。应用读取 GitHub Releases 最新版；仓库发布带 APK 的新 Release 后，此处即可下载并跳转系统安装界面。
+- **安装权限**：首次安装或覆盖安装需系统允许「未知来源」。
+
 ## 可验证事实与个人推测
 
 - **可验证事实**：接口地址、鉴权头、事件名、字段名均来自阿里云帮助中心官方文档；本项目源码可逐行核对。
