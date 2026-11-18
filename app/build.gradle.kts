@@ -13,13 +13,15 @@ android {
         applicationId = "com.liweiwen.voicenotes"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.4.0"
+        versionCode = 6
+        versionName = "1.5.0"
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // 开启 R8 代码压缩 + 资源压缩，显著减小安装包体积
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // 与 debug 同签名，方便覆盖安装
             signingConfig = signingConfigs.getByName("debug")
@@ -51,7 +53,9 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview:1.6.8")
     implementation("androidx.compose.foundation:foundation:1.6.8")
     implementation("androidx.compose.material3:material3:1.2.1")
-    implementation("androidx.compose.material:material-icons-extended:1.6.8")
+    // 轻量图标包：只保留 core（约 850KB），缺失图标在 AppIcons.kt 本地定义。
+    // 原 extended 包 classes.jar 约 36MB，会让安装包凭空大出十几 MB。
+    implementation("androidx.compose.material:material-icons-core:1.6.8")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     debugImplementation("androidx.compose.ui:ui-tooling:1.6.8")
 }

@@ -1,6 +1,10 @@
 package com.liweiwen.voicenotes.ui
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -12,7 +16,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,9 +24,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,6 +41,7 @@ import com.liweiwen.voicenotes.data.Note
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.sin
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -49,7 +51,6 @@ fun NoteBubble(
     isPlaying: Boolean,
     multiSelect: Boolean = false,
     selected: Boolean = false,
-    onPlayToggle: () -> Unit,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -59,10 +60,10 @@ fun NoteBubble(
     val subText = if (dark) Color(0xFF9FB3B0) else Color(0xFF5F7774)
     val accent = if (dark) Color(0xFF62E6C8) else Color(0xFF00A88C)
 
-    // 纯语音记录（无转写文字）：不显示文字行与复制图标，只保留波形 + 时长
+    // 纯语音记录（无转写文字）：只显示波形 + 时长
     val voiceOnly = note.hasAudio && (note.text == "[语音消息]" || note.text.isBlank())
     val bubbleBorder by animateColorAsState(
-        targetValue = if (multiSelect && selected) accent else cardBorder,
+        targetValue = if (multiSelect && selected) accent else if (isPlaying) accent.copy(alpha = 0.7f) else cardBorder,
         animationSpec = tween(180),
         label = "bubbleBorder",
     )
@@ -70,6 +71,15 @@ fun NoteBubble(
         targetValue = if (multiSelect && selected) accent.copy(alpha = if (dark) 0.16f else 0.10f) else cardBg,
         animationSpec = tween(180),
         label = "bubbleBg",
+    )
+
+    // 播放时波形轻微起伏，给用户明确的"正在响"反馈
+    val transition = rememberInfiniteTransition(label = "playWave")
+    val wavePhase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2 * Math.PI).toFloat(),
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Restart),
+        label = "wavePhase",
     )
 
     Row(
@@ -97,45 +107,9 @@ fun NoteBubble(
             Spacer(Modifier.width(8.dp))
         }
         Column(horizontalAlignment = Alignment.End) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(end = 6.dp, bottom = 4.dp),
-            ) {
-                Text(formatTime(note.time), fontSize = 10.sp, color = subText)
-                Spacer(Modifier.width(8.dp))
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(accent.copy(alpha = 0.12f))
-                        .padding(horizontal = 8.dp, vertical = 2.dp),
-                ) {
-                    Text(
-                        if (note.hasAudio) "语音 ${formatDuration(note.effectiveDurationMs)}" else "文字",
-                        fontSize = 10.sp,
-                        color = accent,
-                        fontWeight = FontWeight.Medium,
-                    )
-                }
-            }
+            // 只保留时间；语音时长已在气泡内显示，不再重复标注"语音 X:XX"
+            Text(formatTime(note.time), fontSize = 10.sp, color = subText, modifier = Modifier.padding(end = 6.dp, bottom = 4.dp))
             Row(verticalAlignment = Alignment.Bottom) {
-                if (note.hasAudio && !multiSelect) {
-                    Box(
-                        modifier = Modifier
-                            .padding(end = 8.dp, bottom = 4.dp)
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(accent.copy(alpha = 0.14f))
-                            .combinedClickable(onClick = onPlayToggle),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = if (isPlaying) "停止播放" else "播放语音",
-                            tint = accent,
-                            modifier = Modifier.size(19.dp),
-                        )
-                    }
-                }
                 Column(
                     modifier = Modifier
                         .widthIn(max = 290.dp)
@@ -148,35 +122,59 @@ fun NoteBubble(
                 ) {
                     // 纯语音记录不显示文字行，只留波形 + 时长
                     if (!voiceOnly) {
-                        Row(verticalAlignment = Alignment.Top) {
-                            Text(
-                                note.text,
-                                modifier = Modifier.weight(1f),
-                                fontSize = 15.sp,
-                                lineHeight = 21.sp,
-                                color = textColor,
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            if (!multiSelect) {
-                                Icon(
-                                    Icons.Default.ContentCopy,
-                                    contentDescription = "点卡片复制",
-                                    tint = subText.copy(alpha = 0.7f),
-                                    modifier = Modifier.size(14.dp),
-                                )
-                            }
-                        }
+                        Text(
+                            note.text,
+                            fontSize = 15.sp,
+                            lineHeight = 21.sp,
+                            color = textColor,
+                        )
                     }
                     if (note.hasAudio) {
-                        if (!voiceOnly) Spacer(Modifier.height(9.dp))
+                        if (!voiceOnly) Spacer(Modifier.padding(top = 9.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            WaveGlyph(color = accent, modifier = Modifier.size(if (voiceOnly) 52.dp else 34.dp, 16.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(formatDuration(note.effectiveDurationMs), fontSize = if (voiceOnly) 12.sp else 10.sp, color = subText)
+                            AnimatedWave(
+                                color = if (isPlaying) accent else accent.copy(alpha = 0.75f),
+                                animate = isPlaying,
+                                phase = wavePhase,
+                                modifier = Modifier.size(if (voiceOnly) 56.dp else 40.dp, 20.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                formatDuration(note.effectiveDurationMs),
+                                fontSize = if (voiceOnly) 13.sp else 11.sp,
+                                color = if (isPlaying) accent else subText,
+                                fontWeight = if (voiceOnly) FontWeight.Medium else FontWeight.Normal,
+                            )
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+/** 播放时随相位起伏的声波；静止时为固定造型。 */
+@Composable
+private fun AnimatedWave(
+    color: Color,
+    animate: Boolean,
+    phase: Float,
+    modifier: Modifier = Modifier,
+) {
+    androidx.compose.foundation.Canvas(modifier.graphicsLayer { alpha = if (animate) 1f else 0.85f }) {
+        val bars = listOf(0.35f, 0.7f, 1f, 0.62f, 0.28f, 0.8f, 0.45f)
+        val barW = size.width / (bars.size * 2f)
+        bars.forEachIndexed { i, ratio ->
+            val lift = if (animate) (0.5f + 0.5f * sin(phase + i * 0.9f)) else 1f
+            val h = size.height * ratio * (0.55f + 0.45f * lift)
+            val bx = barW * (2 * i + 1)
+            drawLine(
+                color = color,
+                start = androidx.compose.ui.geometry.Offset(bx, (size.height - h) / 2),
+                end = androidx.compose.ui.geometry.Offset(bx, (size.height + h) / 2),
+                strokeWidth = barW * 0.66f,
+                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+            )
         }
     }
 }

@@ -18,22 +18,25 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -44,8 +47,9 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * 新版录音面板：声纹光球 + 扩散涟漪 + 左右药丸按钮。
- * 手势判定仍在输入栏完成，这里只负责视觉反馈。
+ * 录音面板：声纹光球 + 扩散涟漪 + 左右"跟手"操作块。
+ * 手势判定在输入栏完成，这里根据 slideDx / slideMode 做视觉反馈：
+ * 光球跟手位移、落入左/右操作区时变色，操作块放大吸附并显示填充进度。
  */
 @Composable
 fun RecordingPanel(
@@ -54,6 +58,8 @@ fun RecordingPanel(
     liveText: String,
     elapsedSec: Int,
     dark: Boolean,
+    slideDx: Float = 0f,
+    slideThreshold: Float = 1f,
 ) {
     val transition = rememberInfiniteTransition(label = "recording")
     val ripple by transition.animateFloat(
@@ -68,24 +74,26 @@ fun RecordingPanel(
         animationSpec = infiniteRepeatable(tween(1200, easing = LinearEasing), RepeatMode.Restart),
         label = "phase",
     )
-    val cancelScale by animateFloatAsState(
-        targetValue = if (mode == SlideMode.CANCEL) 1.12f else 1f,
-        animationSpec = tween(180),
-        label = "cancelScale",
-    )
-    val editScale by animateFloatAsState(
-        targetValue = if (mode == SlideMode.EDIT) 1.12f else 1f,
-        animationSpec = tween(180),
-        label = "editScale",
-    )
 
     val primary = if (dark) Color(0xFF62E6C8) else Color(0xFF00A88C)
-    // 录音时几乎不透明，避免底层记录文字透上来干扰读数
+    val danger = Color(0xFFFF6B6B)
     val scrim = if (dark) Color(0xF2070B14) else Color(0xF4F4F8FB)
     val titleColor = if (dark) Color(0xFFEAF6F3) else Color(0xFF163A36)
     val subColor = if (dark) Color(0xFF9FB3B0) else Color(0xFF5F7774)
-    val cancelColor = if (mode == SlideMode.CANCEL) Color(0xFFFF6B6B) else subColor
-    val editColor = if (mode == SlideMode.EDIT) primary else subColor
+
+    // 归一化进度：-1（完全左滑取消）~ 0 ~ +1（完全右滑转文字）
+    val targetProgress = (slideDx / slideThreshold).coerceIn(-1f, 1f)
+    val progress by animateFloatAsState(targetProgress, animationSpec = tween(80), label = "slideProgress")
+    val cancelActive = mode == SlideMode.CANCEL
+    val editActive = mode == SlideMode.EDIT
+    // 光球当前主色：落区时切换为对应操作色
+    val orbColor = when {
+        cancelActive -> danger
+        editActive -> primary
+        else -> primary
+    }
+    // 光球跟手位移（限制在 ±56dp），用 dp 偏移
+    val orbOffsetDp = (progress * 56f)
 
     Box(
         modifier = Modifier
@@ -95,7 +103,7 @@ fun RecordingPanel(
         Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 84.dp)
+                .padding(top = 76.dp)
                 .padding(horizontal = 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -118,9 +126,11 @@ fun RecordingPanel(
             }
         }
 
+        // 中心光球：跟手位移 + 落区变色
         Box(
             modifier = Modifier
                 .align(Alignment.Center)
+                .offset(x = orbOffsetDp.dp)
                 .size(240.dp),
             contentAlignment = Alignment.Center,
         ) {
@@ -129,29 +139,24 @@ fun RecordingPanel(
                 val cy = size.height / 2f
                 val px = 1.dp.toPx()
 
-                // 柔和光晕
                 drawCircle(
                     brush = Brush.radialGradient(
-                        colors = listOf(primary.copy(alpha = 0.22f), Color.Transparent),
+                        colors = listOf(orbColor.copy(alpha = 0.22f), Color.Transparent),
                         center = Offset(cx, cy),
                         radius = 118.dp.toPx(),
                     ),
                     radius = 118.dp.toPx(),
                     center = Offset(cx, cy),
                 )
-
-                // 三层扩散涟漪
                 repeat(3) { index ->
                     val p = (ripple + index / 3f) % 1f
                     drawCircle(
-                        color = primary.copy(alpha = (1f - p) * 0.28f),
+                        color = orbColor.copy(alpha = (1f - p) * 0.28f),
                         radius = (64f + p * 58f) * px,
                         center = Offset(cx, cy),
                         style = Stroke(width = 1.5f * px),
                     )
                 }
-
-                // 环形声波：64 根短线，随相位起伏
                 val bars = 64
                 for (i in 0 until bars) {
                     val angle = i * (2 * PI / bars).toFloat() + phase * 0.16f
@@ -159,18 +164,16 @@ fun RecordingPanel(
                     val inner = 70f * px
                     val outer = inner + amp * px
                     drawLine(
-                        color = primary.copy(alpha = 0.35f + abs(sin(phase + i * 0.3f)) * 0.5f),
+                        color = orbColor.copy(alpha = 0.35f + abs(sin(phase + i * 0.3f)) * 0.5f),
                         start = Offset(cx + cos(angle) * inner, cy + sin(angle) * inner),
                         end = Offset(cx + cos(angle) * outer, cy + sin(angle) * outer),
                         strokeWidth = 2.6f * px,
                         cap = StrokeCap.Round,
                     )
                 }
-
-                // 内核
                 drawCircle(
                     brush = Brush.radialGradient(
-                        colors = listOf(primary.copy(alpha = 0.95f), primary.copy(alpha = 0.55f)),
+                        colors = listOf(orbColor.copy(alpha = 0.95f), orbColor.copy(alpha = 0.55f)),
                         center = Offset(cx, cy),
                         radius = 56.dp.toPx(),
                     ),
@@ -192,23 +195,40 @@ fun RecordingPanel(
                         SlideMode.EDIT -> "松开转文字"
                         SlideMode.CENTER -> if (inputMode == InputMode.VOICE) "松手保存语音" else "松手转成文字"
                     },
-                    color = Color.White.copy(alpha = 0.88f),
+                    color = Color.White.copy(alpha = 0.9f),
                     fontSize = 14.sp,
                 )
             }
         }
 
+        // 底部左右操作块：色块填充 + 放大吸附 + 图标，随滑动进度连续变化
         Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 58.dp)
+                .padding(bottom = 56.dp)
                 .fillMaxWidth()
                 .padding(horizontal = 18.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ActionPill("取消", cancelColor, cancelScale)
-            ActionPill("语音转文字", editColor, editScale)
+            ActionBlock(
+                label = "取消",
+                active = cancelActive,
+                intensity = (-progress).coerceIn(0f, 1f),
+                color = danger,
+                isCancel = true,
+                dark = dark,
+            )
+            // 中间滑动进度轨道
+            SlideTrack(progress = progress, cancelColor = danger, editColor = primary, dark = dark, modifier = Modifier.weight(1f))
+            ActionBlock(
+                label = if (inputMode == InputMode.VOICE) "转文字" else "转文字编辑",
+                active = editActive,
+                intensity = progress.coerceIn(0f, 1f),
+                color = primary,
+                isCancel = false,
+                dark = dark,
+            )
         }
         Text(
             if (inputMode == InputMode.VOICE) {
@@ -220,23 +240,96 @@ fun RecordingPanel(
             fontSize = 13.sp,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 20.dp),
+                .padding(bottom = 18.dp),
         )
     }
 }
 
+/** 左右操作块：随滑动强度放大、色块填充加深、图标放大，形成吸附操作感。 */
 @Composable
-private fun ActionPill(label: String, color: Color, scale: Float) {
+private fun ActionBlock(
+    label: String,
+    active: Boolean,
+    intensity: Float,
+    color: Color,
+    isCancel: Boolean,
+    dark: Boolean,
+) {
+    val scale by animateFloatAsState(
+        if (active) 1.12f else 1f + intensity * 0.08f,
+        animationSpec = tween(140),
+        label = "blockScale",
+    )
+    val fillAlpha = 0.10f + intensity * 0.26f
+    val borderAlpha = 0.35f + intensity * 0.55f
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            modifier = Modifier
+                .graphicsLayer(scaleX = scale, scaleY = scale)
+                .clip(RoundedCornerShape(22.dp))
+                .background(color.copy(alpha = fillAlpha))
+                .border(2.dp, color.copy(alpha = borderAlpha), RoundedCornerShape(22.dp))
+                .padding(horizontal = 20.dp, vertical = 14.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (isCancel) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "取消",
+                    tint = color,
+                    modifier = Modifier.size((26 + intensity * 8).dp),
+                )
+            } else {
+                // 转文字：声波图标（复用 WaveGlyph）
+                WaveGlyph(
+                    color = color,
+                    modifier = Modifier.size((30 + intensity * 8).dp, (22 + intensity * 6).dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            label,
+            color = if (active || intensity > 0.05f) color else if (dark) Color(0xFF9FB3B0) else Color(0xFF5F7774),
+            fontSize = 14.sp,
+            fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+        )
+    }
+}
+
+/** 中间滑动进度轨道：一个跟随手指的小滑块，左红右绿。 */
+@Composable
+private fun SlideTrack(progress: Float, cancelColor: Color, editColor: Color, dark: Boolean, modifier: Modifier = Modifier) {
+    val trackColor = if (dark) Color(0x33FFFFFF) else Color(0x1A000000)
+    val indicator = when {
+        progress < -0.02f -> cancelColor
+        progress > 0.02f -> editColor
+        else -> if (dark) Color(0xFF8A9A98) else Color(0xFF9AA6A4)
+    }
     Box(
-        modifier = Modifier
-            .graphicsLayer(scaleX = scale, scaleY = scale)
-            .clip(RoundedCornerShape(44.dp))
-            .background(color.copy(alpha = 0.16f))
-            .border(2.dp, color.copy(alpha = 0.55f), RoundedCornerShape(44.dp))
-            .padding(horizontal = 28.dp, vertical = 16.dp),
-        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .padding(horizontal = 14.dp)
+            .height(6.dp)
+            .clip(RoundedCornerShape(3.dp))
+            .background(trackColor),
     ) {
-        Text(label, color = color, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        // 中心刻度
+        Box(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .size(width = 2.dp, height = 6.dp)
+                .background(if (dark) Color(0x55FFFFFF) else Color(0x33000000)),
+        )
+        // 滑块：progress -1..1 映射到轨道两端（用 Canvas 按真实宽度定位）
+        androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxWidth().height(6.dp)) {
+            val w = size.width
+            val cx = (progress + 1f) / 2f * w
+            drawCircle(
+                color = indicator,
+                radius = 7.dp.toPx(),
+                center = Offset(cx.coerceIn(0f, w), size.height / 2f),
+            )
+        }
     }
 }
 

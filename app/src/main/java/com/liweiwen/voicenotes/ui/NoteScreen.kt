@@ -54,14 +54,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -226,6 +224,8 @@ private fun NoteScreenContent(
     var status by remember { mutableStateOf("") }
     var recording by remember { mutableStateOf(false) }
     var slideMode by remember { mutableStateOf(SlideMode.CENTER) }
+    // 手指相对起点的水平位移（px），驱动录音面板的跟手反馈
+    var slideDx by remember { mutableStateOf(0f) }
     var liveText by remember { mutableStateOf("") }
     var elapsedSec by remember { mutableStateOf(0) }
     var busy by remember { mutableStateOf(false) }
@@ -234,6 +234,10 @@ private fun NoteScreenContent(
     var searchQuery by remember { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<Note?>(null) }
     var pendingEdit by remember { mutableStateOf<Note?>(null) }
+    // 长按记录弹出的操作面板；null 表示不显示
+    var actionNote by remember { mutableStateOf<Note?>(null) }
+    var playbackSpeed by remember { mutableStateOf(1.0f) }
+    var transcribingId by remember { mutableStateOf<String?>(null) }
     var multiSelect by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
     var confirmBatchDelete by remember { mutableStateOf(false) }
@@ -396,6 +400,104 @@ private fun NoteScreenContent(
 
     fun toggleSelected(id: String) {
         selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+    }
+
+    /** 点按气泡：语音播放/停止（用当前倍速），文字复制。 */
+    fun onBubbleClick(note: Note) {
+        if (multiSelect) {
+            toggleSelected(note.id)
+            return
+        }
+        if (note.hasAudio) {
+            val path = note.audioPath ?: return
+            if (playingPath == path) {
+                audioPlayer.stop()
+                playingPath = null
+            } else {
+                audioPlayer.play(path, playbackSpeed, onFinished = { playingPath = null })
+                playingPath = path
+            }
+        } else {
+            clipboard.setText(AnnotatedString(note.text))
+            Toast.makeText(context, "已复制文字", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** 长按气泡：弹出操作面板（多选态下仍为切换选中）。 */
+    fun onBubbleLongClick(note: Note) {
+        if (multiSelect) {
+            toggleSelected(note.id)
+        } else {
+            audioPlayer.stop()
+            playingPath = null
+            playbackSpeed = 1.0f
+            actionNote = note
+        }
+    }
+
+    /** 用倍速播放某条语音，供操作面板调用。 */
+    fun playWithSpeed(note: Note, speed: Float) {
+        val path = note.audioPath ?: return
+        playbackSpeed = speed
+        audioPlayer.stop()
+        audioPlayer.play(path, speed, onFinished = { playingPath = null })
+        playingPath = path
+        Toast.makeText(context, "以 ${speed}x 播放", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * 把已保存的语音重新转成文字：读取 WAV 的 PCM 数据，分块送给百炼实时 ASR。
+     * 全程离线失败时给出提示，不改动原记录。
+     */
+    suspend fun transcribeExisting(note: Note) {
+        val path = note.audioPath
+        if (path.isNullOrBlank()) return
+        if (settingsStore.apiKey.isBlank()) {
+            Toast.makeText(context, "请先在设置里填写 API Key", Toast.LENGTH_SHORT).show()
+            return
+        }
+        transcribingId = note.id
+        val asr = DashScopeAsr(
+            apiKey = settingsStore.apiKey,
+            wsUrl = settingsStore.wsUrl,
+            model = settingsStore.model.ifBlank { SettingsStore.DEFAULT_MODEL },
+            onPartial = {},
+        )
+        val result = try {
+            if (!withTimeout(6_000) { asr.connect() }) {
+                AsrResult.Failure("连接转写服务失败")
+            } else {
+                val bytes = File(path).readBytes()
+                if (bytes.size > 44) {
+                    var offset = 44
+                    while (offset < bytes.size) {
+                        val end = minOf(offset + PcmRecorder.FRAME_BYTES, bytes.size)
+                        asr.sendAudio(bytes.copyOfRange(offset, end))
+                        offset = end
+                        kotlinx.coroutines.delay(20)
+                    }
+                }
+                withTimeout(20_000) { asr.finish() }
+            }
+        } catch (e: Exception) {
+            AsrResult.Failure(e.message ?: "转写失败")
+        } finally {
+            asr.cancel()
+        }
+        transcribingId = null
+        when (result) {
+            is AsrResult.Success -> {
+                val text = result.text
+                if (text.isBlank()) {
+                    Toast.makeText(context, "没能识别出文字", Toast.LENGTH_SHORT).show()
+                } else {
+                    noteStore.updateText(note.id, text)
+                    refreshNotes()
+                    Toast.makeText(context, "已转成文字", Toast.LENGTH_SHORT).show()
+                }
+            }
+            is AsrResult.Failure -> Toast.makeText(context, "转写失败：${result.message}", Toast.LENGTH_SHORT).show()
+        }
     }
 
     fun copySelected() {
@@ -638,7 +740,7 @@ private fun NoteScreenContent(
                         IconButton(onClick = {
                             selectedIds = if (selectedIds.size == visibleNotes.size) emptySet() else visibleNotes.map { it.id }.toSet()
                         }) {
-                            Icon(Icons.Default.SelectAll, contentDescription = "全选/取消全选", tint = textColor)
+                            Icon(AppIcons.SelectAll, contentDescription = "全选/取消全选", tint = textColor)
                         }
                         IconButton(onClick = { exitMultiSelect() }) {
                             Icon(Icons.Default.Close, contentDescription = "退出多选", tint = textColor)
@@ -650,7 +752,7 @@ private fun NoteScreenContent(
                                 multiSelect = true
                                 selectedIds = emptySet()
                             }) {
-                                Icon(Icons.Default.SelectAll, contentDescription = "多选", tint = textColor)
+                                Icon(AppIcons.SelectAll, contentDescription = "多选", tint = textColor)
                             }
                             IconButton(onClick = { searchOpen = true }) {
                                 Icon(Icons.Default.Search, contentDescription = "搜索记录", tint = textColor)
@@ -730,33 +832,8 @@ private fun NoteScreenContent(
                             isPlaying = playingPath == note.audioPath && note.audioPath != null,
                             multiSelect = multiSelect,
                             selected = note.id in selectedIds,
-                            onPlayToggle = {
-                                val path = note.audioPath
-                                if (path == null) return@NoteBubble
-                                if (playingPath == path) {
-                                    audioPlayer.stop()
-                                    playingPath = null
-                                } else {
-                                    audioPlayer.play(path, onFinished = { playingPath = null })
-                                    playingPath = path
-                                }
-                            },
-                            onClick = {
-                                if (multiSelect) {
-                                    toggleSelected(note.id)
-                                } else {
-                                    clipboard.setText(AnnotatedString(note.text))
-                                    Toast.makeText(context, "已复制，长按气泡可编辑", Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            onLongClick = {
-                                if (multiSelect) {
-                                    toggleSelected(note.id)
-                                } else {
-                                    editText = note.text
-                                    pendingEdit = note
-                                }
-                            },
+                            onClick = { onBubbleClick(note) },
+                            onLongClick = { onBubbleLongClick(note) },
                         )
                     }
                 }
@@ -785,7 +862,7 @@ private fun NoteScreenContent(
                         Text(if (selectedIds.size == visibleNotes.size) "取消全选" else "全选", color = barAccent)
                     }
                     TextButton(onClick = { copySelected() }) {
-                        Icon(Icons.Default.ContentPaste, contentDescription = null, tint = barAccent, modifier = Modifier.size(17.dp))
+                        Icon(AppIcons.ContentPaste, contentDescription = null, tint = barAccent, modifier = Modifier.size(17.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("复制", color = barAccent)
                     }
@@ -877,7 +954,11 @@ private fun NoteScreenContent(
                             finishJob = scope.launch { startRecording() }
                         },
                         onSlideModeChange = { slideMode = it },
-                        onEnd = { mode -> finishJob = scope.launch { stopRecording(mode) } },
+                        onSlideDx = { slideDx = it },
+                        onEnd = { mode ->
+                            slideDx = 0f
+                            finishJob = scope.launch { stopRecording(mode) }
+                        },
                     )
                     Row(
                         modifier = Modifier
@@ -916,7 +997,7 @@ private fun NoteScreenContent(
                                     WaveGlyph(color = modeAccent, modifier = Modifier.size(21.dp))
                                 } else {
                                     Icon(
-                                        Icons.Default.Mic,
+                                        AppIcons.Mic,
                                         contentDescription = "按住说话",
                                         tint = modeAccent,
                                         modifier = Modifier.size(21.dp),
@@ -1026,6 +1107,45 @@ private fun NoteScreenContent(
                     liveText = liveText,
                     elapsedSec = elapsedSec,
                     dark = dark,
+                    slideDx = slideDx,
+                    slideThreshold = with(density) { 80.dp.toPx() },
+                )
+            }
+
+            // 长按记录弹出的底部操作面板（覆盖在本层，不铺灰色遮罩）
+            actionNote?.let { note ->
+                NoteActionSheet(
+                    note = note,
+                    dark = dark,
+                    transcribing = transcribingId == note.id,
+                    onDismiss = { actionNote = null },
+                    onPlay = { speed ->
+                        actionNote = null
+                        playWithSpeed(note, speed)
+                    },
+                    onTranscribe = {
+                        actionNote = null
+                        scope.launch { transcribeExisting(note) }
+                    },
+                    onCopy = {
+                        actionNote = null
+                        clipboard.setText(AnnotatedString(note.text))
+                        Toast.makeText(context, "已复制文字", Toast.LENGTH_SHORT).show()
+                    },
+                    onEdit = {
+                        actionNote = null
+                        editText = note.text
+                        pendingEdit = note
+                    },
+                    onMultiSelect = {
+                        actionNote = null
+                        multiSelect = true
+                        selectedIds = setOf(note.id)
+                    },
+                    onDelete = {
+                        actionNote = null
+                        pendingDelete = note
+                    },
                 )
             }
         }
@@ -1117,7 +1237,6 @@ private fun NoteScreenContent(
             modelInput = modelInput,
             theme = theme,
             stats = dataStats,
-            notes = notes,
             notesFilePath = noteStore.notesFilePath,
             recordingsDirPath = noteStore.recordingsDirPath,
             onRefresh = { refreshData() },
@@ -1248,7 +1367,7 @@ private fun QuickPasteBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            Icons.Default.ContentPaste,
+            AppIcons.ContentPaste,
             contentDescription = null,
             tint = if (dark) AccentBright else Accent,
             modifier = Modifier.size(17.dp),
@@ -1283,6 +1402,7 @@ private fun recordGesture(
     onTap: (x: Float) -> Unit,
     onStart: () -> Unit,
     onSlideModeChange: (SlideMode) -> Unit,
+    onSlideDx: (Float) -> Unit,
     onEnd: (SlideMode) -> Unit,
 ): Modifier = Modifier.pointerInput(thresholdPx) {
     awaitEachGesture {
@@ -1323,6 +1443,7 @@ private fun recordGesture(
                     onStart()
                 }
             } else {
+                onSlideDx(dx)
                 val next = when {
                     dx <= -thresholdPx -> SlideMode.CANCEL
                     dx >= thresholdPx -> SlideMode.EDIT
@@ -1334,7 +1455,10 @@ private fun recordGesture(
                 }
             }
         }
-        if (longPressed) onEnd(mode) else onTap(downX)
+        if (longPressed) {
+            onSlideDx(0f)
+            onEnd(mode)
+        } else onTap(downX)
     }
 }
 
@@ -1347,7 +1471,6 @@ private fun SettingsPage(
     modelInput: String,
     theme: String,
     stats: com.liweiwen.voicenotes.data.StorageStats,
-    notes: List<com.liweiwen.voicenotes.data.Note>,
     notesFilePath: String,
     recordingsDirPath: String,
     onRefresh: () -> Unit,
@@ -1366,6 +1489,8 @@ private fun SettingsPage(
     val textColor = if (dark) Color(0xFFECECEC) else Color(0xFF222222)
     val subColor = if (dark) Color(0xFF8A8A8A) else Color(0xFF999999)
     val cardBg = if (dark) InputDark else Color.White
+    // API 配置默认收起，避免暴露默认模型 Key 等敏感信息；点开才显示
+    var showApiConfig by remember { mutableStateOf(false) }
 
     Scaffold(
         containerColor = background,
@@ -1419,22 +1544,6 @@ private fun SettingsPage(
                     }
                 }
                 Spacer(Modifier.height(6.dp))
-                // 实时记录列表（最近 20 条）
-                if (notes.isEmpty()) {
-                    Text("暂无本地记录", fontSize = 12.sp, color = subColor, modifier = Modifier.padding(vertical = 6.dp))
-                } else {
-                    CardBox(cardBg) {
-                        Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                            notes.take(20).forEach { note ->
-                                DataRow(note, textColor, subColor)
-                            }
-                            if (notes.size > 20) {
-                                Text("…还有 ${notes.size - 20} 条", fontSize = 11.sp, color = subColor, modifier = Modifier.padding(vertical = 4.dp))
-                            }
-                        }
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
                 TextButton(onClick = onClearAudio) {
                     Text("清除语音文件（保留文字）", color = if (dark) Color(0xFFE8B04B) else Color(0xFFB8860B))
                 }
@@ -1462,7 +1571,7 @@ private fun SettingsPage(
 
             Spacer(Modifier.height(12.dp))
 
-            // 语音转写
+            // 语音转写：API 配置默认收起，不直接展示 Key / 模型等默认值
             SettingsSection(title = "语音转写") {
                 Text(
                     "录音保存为本机 WAV 文件，不需要存储权限；仅转写时把音频流式发给百炼。API Key 只存本机。",
@@ -1470,29 +1579,37 @@ private fun SettingsPage(
                     color = subColor,
                 )
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = apiKeyInput,
-                    onValueChange = onApiKeyChange,
-                    label = { Text("DashScope API Key") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = workspaceInput,
-                    onValueChange = onWorkspaceChange,
-                    label = { Text("业务空间 ID（可选）") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = modelInput,
-                    onValueChange = onModelChange,
-                    label = { Text("识别模型") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                TextButton(onClick = { showApiConfig = !showApiConfig }) {
+                    Text(
+                        if (showApiConfig) "收起 API 配置" else "API 配置（点开填写 Key）",
+                        color = if (dark) AccentBright else Accent,
+                    )
+                }
+                if (showApiConfig) {
+                    OutlinedTextField(
+                        value = apiKeyInput,
+                        onValueChange = onApiKeyChange,
+                        label = { Text("DashScope API Key") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = workspaceInput,
+                        onValueChange = onWorkspaceChange,
+                        label = { Text("业务空间 ID（可选）") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = modelInput,
+                        onValueChange = onModelChange,
+                        label = { Text("识别模型") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
 
             Spacer(Modifier.height(20.dp))
@@ -1556,40 +1673,113 @@ private fun PathLine(
             Text(label, fontSize = 11.sp, color = subColor)
             Text(path, fontSize = 10.sp, color = textColor)
         }
-        Icon(Icons.Default.FolderOpen, contentDescription = "打开目录", tint = Accent, modifier = Modifier.size(18.dp))
+        Icon(AppIcons.FolderOpen, contentDescription = "打开目录", tint = Accent, modifier = Modifier.size(18.dp))
+    }
+}
+
+/** 长按记录弹出的底部操作面板：语音可播放/倍速/转文字，文字可复制/编辑，通用多选/删除。 */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun NoteActionSheet(
+    note: com.liweiwen.voicenotes.data.Note,
+    dark: Boolean,
+    transcribing: Boolean,
+    onDismiss: () -> Unit,
+    onPlay: (Float) -> Unit,
+    onTranscribe: () -> Unit,
+    onCopy: () -> Unit,
+    onEdit: () -> Unit,
+    onMultiSelect: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val accent = if (dark) AccentBright else Accent
+    val textColor = if (dark) Color(0xFFECECEC) else Color(0xFF222222)
+    val sheetBg = if (dark) Color(0xFF1B2438) else Color(0xFFFFFFFF)
+    val danger = Color(0xFFE64340)
+
+    // 上半部分点击关闭，底部是面板；不铺任何半透明灰层，避免整屏发灰
+    Column(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clickable(onClick = onDismiss),
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                .background(sheetBg)
+                .border(1.dp, if (dark) Color(0x22FFFFFF) else Color(0x12000000), RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+        ) {
+            // 顶部拖拽指示条
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .size(width = 40.dp, height = 4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(if (dark) Color(0x44FFFFFF) else Color(0x22000000)),
+            )
+            Spacer(Modifier.height(12.dp))
+            Column {
+                Text("记录操作", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = textColor)
+                val preview = if (note.hasAudio && (note.text == "[语音消息]" || note.text.isBlank())) {
+                    "语音 · ${note.effectiveDurationMs / 1000} 秒"
+                } else {
+                    note.text.take(24) + if (note.text.length > 24) "…" else ""
+                }
+                Text(preview, fontSize = 12.sp, color = if (dark) Color(0xFF9FB3B0) else Color(0xFF888888))
+            }
+            Spacer(Modifier.height(8.dp))
+            if (note.hasAudio) {
+                ActionRow(Icons.Default.PlayArrow, "播放语音", accent, onClick = { onPlay(1.0f) })
+                ActionRow(Icons.Default.PlayArrow, "1.5 倍速播放", accent, onClick = { onPlay(1.5f) })
+                ActionRow(Icons.Default.PlayArrow, "2 倍速播放", accent, onClick = { onPlay(2.0f) })
+                ActionRow(
+                    Icons.Default.Edit,
+                    if (transcribing) "正在转文字…" else "语音转文字",
+                    accent,
+                    enabled = !transcribing,
+                    onClick = onTranscribe,
+                )
+            }
+            if (note.text.isNotBlank() && note.text != "[语音消息]") {
+                ActionRow(AppIcons.ContentCopy, "复制文字", accent, onClick = onCopy)
+                ActionRow(Icons.Default.Edit, "编辑内容", accent, onClick = onEdit)
+            }
+            ActionRow(AppIcons.SelectAll, "多选", accent, onClick = onMultiSelect)
+            ActionRow(Icons.Default.Delete, "删除记录", danger, onClick = onDelete)
+            Spacer(Modifier.height(4.dp))
+        }
     }
 }
 
 @Composable
-private fun DataRow(note: com.liweiwen.voicenotes.data.Note, textColor: Color, subColor: Color) {
+private fun ActionRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    color: Color,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                note.text.take(28) + if (note.text.length > 28) "…" else "",
-                fontSize = 12.sp,
-                color = textColor,
-                maxLines = 1,
-            )
-            Text(
-                formatRecordTime(note.time) + if (note.hasAudio) " · 语音 ${formatDuration(note.effectiveDurationMs)}" else " · 文字",
-                fontSize = 10.sp,
-                color = subColor,
-            )
-        }
+        Icon(icon, contentDescription = null, tint = if (enabled) color else color.copy(alpha = 0.4f), modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(14.dp))
+        Text(label, fontSize = 15.sp, color = if (enabled) color else color.copy(alpha = 0.4f))
     }
 }
 
 private fun formatRecordTime(time: Long): String {
     val d = java.util.Date(time)
     return java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(d)
-}
-
-private fun formatDuration(ms: Long): String {
-    val sec = ms / 1000
-    return "%d:%02d".format(sec / 60, sec % 60)
 }
 
 private fun formatBytes(bytes: Long): String = when {
