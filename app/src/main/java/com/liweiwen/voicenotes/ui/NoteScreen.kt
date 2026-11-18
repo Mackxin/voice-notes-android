@@ -31,11 +31,14 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -46,6 +49,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -103,6 +107,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -137,6 +142,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.Slider
 import com.liweiwen.voicenotes.audio.TtsSpeaker
 import com.liweiwen.voicenotes.data.BackupManager
+import com.liweiwen.voicenotes.data.UpdateManager
 import kotlin.math.hypot
 
 enum class SlideMode { CENTER, CANCEL, EDIT }
@@ -318,6 +324,17 @@ private fun NoteScreenContent(
     var colorPickerOpen by remember { mutableStateOf(false) }
     var ttsSpeaking by remember { mutableStateOf(false) }
 
+    // ===== v2.1 关于/使用手册/内置更新 =====
+    var showAbout by remember { mutableStateOf(false) }
+    var updateChecking by remember { mutableStateOf(false) }
+    var updateDownloading by remember { mutableStateOf(false) }
+    var updateProgress by remember { mutableStateOf(0) }
+    var updateInfo by remember { mutableStateOf<UpdateManager.ReleaseInfo?>(null) }
+    val appVersion = remember {
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "-" }
+            .getOrDefault("-")
+    }
+
     // 系统 TTS：文字朗读，与语音播放互不干扰（触发时互相停止）
     val tts = remember { TtsSpeaker(context) }
     DisposableEffect(Unit) {
@@ -489,23 +506,26 @@ private fun NoteScreenContent(
         if (searchOpen) searchFocusRequester.requestFocus()
     }
 
-    // 返回键优先级：回收站 > 设置页 > 多选 > 搜索 > 打字模式 >（不拦截，交给系统退出）
-    BackHandler(enabled = trashOpen) {
+    // 返回键优先级：关于 > 回收站 > 设置页 > 多选 > 搜索 > 打字模式 >（不拦截，交给系统退出）
+    BackHandler(enabled = showAbout) {
+        showAbout = false
+    }
+    BackHandler(enabled = !showAbout && trashOpen) {
         trashOpen = false
         refreshData()
     }
-    BackHandler(enabled = !trashOpen && showSettings) {
+    BackHandler(enabled = !showAbout && !trashOpen && showSettings) {
         showSettings = false
         refreshData()
     }
-    BackHandler(enabled = !trashOpen && !showSettings && multiSelect) {
+    BackHandler(enabled = !showAbout && !trashOpen && !showSettings && multiSelect) {
         exitMultiSelect()
     }
-    BackHandler(enabled = !trashOpen && !showSettings && !multiSelect && searchOpen) {
+    BackHandler(enabled = !showAbout && !trashOpen && !showSettings && !multiSelect && searchOpen) {
         searchOpen = false
         searchQuery = ""
     }
-    BackHandler(enabled = !trashOpen && !showSettings && !multiSelect && !searchOpen && textMode) {
+    BackHandler(enabled = !showAbout && !trashOpen && !showSettings && !multiSelect && !searchOpen && textMode) {
         exitTextMode()
     }
 
@@ -887,7 +907,12 @@ private fun NoteScreenContent(
                     } else if (multiSelect) {
                         Text("已选 ${selectedIds.size} 项", fontSize = 18.sp, fontWeight = FontWeight.Medium)
                     } else {
-                        Text("随手说", fontSize = 18.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            "随手说",
+                            fontSize = 19.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (dark) AccentBright else Accent,
+                        )
                     }
                 },
                 actions = {
@@ -1283,33 +1308,39 @@ private fun NoteScreenContent(
                         }
                         Spacer(Modifier.width(8.dp))
                         if (textMode) {
-                            TextField(
+                            // 用 BasicTextField 自绘占位符：占位文字右移与光标错开，避免光标压在首字上显示不全
+                            BasicTextField(
                                 value = draft,
                                 onValueChange = { draft = it },
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(46.dp)
                                     .focusRequester(clipFocusRequester),
-                                placeholder = { Text("输入文字…", fontSize = 14.sp, color = subColor, maxLines = 1) },
                                 singleLine = true,
+                                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, color = textColor),
+                                // 空字段时隐藏光标，避免竖线压住占位文字；开始输入后恢复
+                                cursorBrush = SolidColor(if (draft.isEmpty()) Color.Transparent else modeAccent),
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                                 keyboardActions = KeyboardActions(onDone = { exitTextMode() }),
-                                trailingIcon = {
-                                    IconButton(onClick = { exitTextMode() }) {
-                                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "收起键盘", tint = subColor)
+                                decorationBox = { inner ->
+                                    Box(
+                                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                                        contentAlignment = Alignment.CenterStart,
+                                    ) {
+                                        if (draft.isEmpty()) {
+                                            Text("输入文字…", fontSize = 14.sp, color = subColor, maxLines = 1)
+                                        }
+                                        inner()
                                     }
                                 },
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = Color.Transparent,
-                                    unfocusedContainerColor = Color.Transparent,
-                                    disabledContainerColor = Color.Transparent,
-                                    focusedIndicatorColor = Color.Transparent,
-                                    unfocusedIndicatorColor = Color.Transparent,
-                                    cursorColor = modeAccent,
-                                    focusedTextColor = textColor,
-                                    unfocusedTextColor = textColor,
-                                ),
                             )
+                            // 收起键盘按钮移到输入区外部独立占位，避免挤压输入文字
+                            IconButton(
+                                onClick = { exitTextMode() },
+                                modifier = Modifier.size(32.dp),
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "收起键盘", tint = subColor, modifier = Modifier.size(20.dp))
+                            }
                         } else {
                             Box(
                                 modifier = Modifier
@@ -1582,6 +1613,99 @@ private fun NoteScreenContent(
                 refreshData()
                 Toast.makeText(context, "已清除语音文件，文字记录保留", Toast.LENGTH_SHORT).show()
             },
+            appVersion = appVersion,
+            updateChecking = updateChecking,
+            onOpenAbout = { showAbout = true },
+            onCheckUpdate = {
+                updateChecking = true
+                scope.launch {
+                    val result = UpdateManager.checkLatest()
+                    updateChecking = false
+                    result.onSuccess { info ->
+                        if (UpdateManager.isNewer(info.version, appVersion)) {
+                            updateInfo = info
+                        } else {
+                            Toast.makeText(context, "已是最新版本（$appVersion）", Toast.LENGTH_SHORT).show()
+                        }
+                    }.onFailure { e ->
+                        Toast.makeText(context, "检查更新失败：${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            },
+        )
+    }
+
+    // 关于 / 使用手册全屏页
+    if (showAbout) {
+        AboutPage(
+            dark = dark,
+            appVersion = appVersion,
+            onBack = { showAbout = false },
+            onCheckUpdate = {
+                updateChecking = true
+                scope.launch {
+                    val result = UpdateManager.checkLatest()
+                    updateChecking = false
+                    result.onSuccess { info ->
+                        if (UpdateManager.isNewer(info.version, appVersion)) {
+                            updateInfo = info
+                        } else {
+                            Toast.makeText(context, "已是最新版本（$appVersion）", Toast.LENGTH_SHORT).show()
+                        }
+                    }.onFailure { e ->
+                        Toast.makeText(context, "检查更新失败：${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            },
+            updateChecking = updateChecking,
+        )
+    }
+
+    // 发现新版本：提示下载并拉起系统安装界面
+    updateInfo?.let { info ->
+        AlertDialog(
+            onDismissRequest = { if (!updateDownloading) updateInfo = null },
+            title = { Text("发现新版本 ${info.version}") },
+            text = {
+                Column {
+                    Text("当前版本 $appVersion", fontSize = 12.sp, color = Color(0xFF999999))
+                    Spacer(Modifier.height(8.dp))
+                    Text(info.notes.take(400), fontSize = 13.sp)
+                    if (updateDownloading) {
+                        Spacer(Modifier.height(14.dp))
+                        Text("正在下载… $updateProgress%", fontSize = 12.sp)
+                        Spacer(Modifier.height(6.dp))
+                        androidx.compose.material3.LinearProgressIndicator(
+                            progress = { updateProgress / 100f },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Accent,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !updateDownloading,
+                    onClick = {
+                        updateDownloading = true
+                        updateProgress = 0
+                        scope.launch {
+                            val result = UpdateManager.download(context, info.apkUrl) { updateProgress = it }
+                            updateDownloading = false
+                            result.onSuccess { file ->
+                                updateInfo = null
+                                runCatching { UpdateManager.install(context, file) }
+                                    .onFailure { Toast.makeText(context, "无法打开安装界面，请检查未知来源安装权限", Toast.LENGTH_LONG).show() }
+                            }.onFailure { e ->
+                                Toast.makeText(context, "下载失败：${e.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                ) { Text(if (updateDownloading) "下载中" else "下载并安装") }
+            },
+            dismissButton = {
+                TextButton(onClick = { updateInfo = null }, enabled = !updateDownloading) { Text("稍后") }
+            },
         )
     }
 
@@ -1620,9 +1744,9 @@ private fun HomeHero(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(50))
+            .clip(RoundedCornerShape(20))
             .background(Brush.linearGradient(listOf(base, tint)))
-            .border(1.dp, if (dark) Color(0x1AFFFFFF) else Color(0x0D000000), RoundedCornerShape(50))
+            .border(1.dp, if (dark) Color(0x1AFFFFFF) else Color(0x0D000000), RoundedCornerShape(20))
             .padding(horizontal = 18.dp, vertical = 16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1817,6 +1941,10 @@ private fun SettingsPage(
     onSave: () -> Unit,
     onClearAll: () -> Unit,
     onClearAudio: () -> Unit,
+    appVersion: String,
+    updateChecking: Boolean,
+    onOpenAbout: () -> Unit,
+    onCheckUpdate: () -> Unit,
 ) {
     val surface = if (dark) SurfaceDark else SurfaceLight
     val background = if (dark) BgDark else BgLight
@@ -1908,84 +2036,68 @@ private fun SettingsPage(
 
             // 外观
             SettingsSection(title = "外观") {
-                Row {
+                Text("显示模式", fontSize = 12.sp, color = subColor)
+                Spacer(Modifier.height(8.dp))
+                // 分段控件：选中段填充主题色，圆角轨道，现代简洁
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12))
+                        .background(if (dark) Color(0xFF1A2338) else Color(0xFFEEF1F4))
+                        .padding(4.dp),
+                ) {
                     listOf("system" to "跟随系统", "dark" to "深色", "light" to "浅色").forEach { (value, label) ->
-                        TextButton(onClick = { onThemeChange(value) }) {
+                        val selected = theme == value
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(9))
+                                .background(if (selected) (if (dark) AccentBright else Accent) else Color.Transparent)
+                                .clickable { onThemeChange(value) }
+                                .padding(vertical = 9.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
                             Text(
                                 label,
-                                color = if (theme == value) Accent else subColor,
-                                fontWeight = if (theme == value) FontWeight.Bold else FontWeight.Normal,
+                                fontSize = 12.sp,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                color = if (selected) Color.White else subColor,
                             )
                         }
                     }
                 }
-                Spacer(Modifier.height(10.dp))
-                // 主题配色：一排彩色圆点，选中项带白色描边，即时生效
+                Spacer(Modifier.height(14.dp))
+                // 主题配色：卡片网格，每张卡上方一段渐变预览，选中加描边+勾
                 Text("主题配色", fontSize = 12.sp, color = subColor)
                 Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    AppPalettes.all.forEach { p ->
-                        val selected = p.key == themeColor
-                        val swatch = if (dark) p.accentBright else p.accent
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Box(
-                                modifier = Modifier
-                                    .size(34.dp)
-                                    .clip(CircleShape)
-                                    .background(swatch)
-                                    .border(
-                                        if (selected) 2.5.dp else 1.dp,
-                                        if (selected) (if (dark) Color.White else Color(0xFF222222)) else Color.Transparent,
-                                        CircleShape,
-                                    )
-                                    .clickable { onThemeColorChange(p.key) },
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                p.name,
-                                fontSize = 10.sp,
-                                color = if (selected) (if (dark) AccentBright else Accent) else subColor,
+                val customSelected = themeColor == AppPalettes.CUSTOM_KEY
+                val customColor = runCatching {
+                    Color(android.graphics.Color.parseColor(if (customAccent.isBlank()) "#00A88C" else customAccent))
+                }.getOrDefault(Color(0xFF00A88C))
+                // 6 张卡片分两行，每行 3 张等宽
+                val swatches = AppPalettes.all.map { p ->
+                    Triple(p.name, if (dark) p.accentBright else p.accent, { -> onThemeColorChange(p.key) }) to p.key
+                } + listOf(
+                    Triple("自选", customColor, { -> onCustomColor() }) to AppPalettes.CUSTOM_KEY,
+                )
+                swatches.chunked(3).forEach { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        row.forEach { (item, key) ->
+                            ThemeSwatchCard(
+                                modifier = Modifier.weight(1f),
+                                name = item.first,
+                                swatch = item.second,
+                                secondary = if (key == AppPalettes.CUSTOM_KEY) Color(0xFF7C4DFF) else AppPalettes.from(key, customAccent).secondary,
+                                selected = key == themeColor,
+                                dark = dark,
+                                cardBg = cardBg,
+                                rainbow = key == AppPalettes.CUSTOM_KEY,
+                                onClick = item.third,
                             )
                         }
-                    }
-                    // 第六个：自选颜色。外圈彩虹渐变，内圈显示当前选中的自定义色
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        val selected = themeColor == AppPalettes.CUSTOM_KEY
-                        val customColor = runCatching {
-                            Color(android.graphics.Color.parseColor(if (customAccent.isBlank()) "#00A88C" else customAccent))
-                        }.getOrDefault(Color(0xFF00A88C))
-                        Box(
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    Brush.sweepGradient(
-                                        listOf(
-                                            Color(0xFFFF5252), Color(0xFFFFD740), Color(0xFF69F0AE),
-                                            Color(0xFF40C4FF), Color(0xFF7C4DFF), Color(0xFFFF5252),
-                                        ),
-                                    ),
-                                )
-                                .border(
-                                    if (selected) 2.5.dp else 1.dp,
-                                    if (selected) (if (dark) Color.White else Color(0xFF222222)) else Color.Transparent,
-                                    CircleShape,
-                                )
-                                .clickable { onCustomColor() },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Box(Modifier.size(22.dp).clip(CircleShape).background(customColor))
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "自选",
-                            fontSize = 10.sp,
-                            color = if (selected) (if (dark) AccentBright else Accent) else subColor,
-                        )
                     }
                 }
                 if (themeColor == AppPalettes.CUSTOM_KEY) {
@@ -2061,6 +2173,46 @@ private fun SettingsPage(
                 }
             }
 
+            Spacer(Modifier.height(4.dp))
+
+            // 关于与更新
+            SettingsSection(title = "关于与更新") {
+                CardBox(cardBg) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(12))
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(if (dark) AccentBright else Accent, Secondary),
+                                        ),
+                                    ),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text("随", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column {
+                                Text("随手说", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = textColor)
+                                Text("版本 $appVersion", fontSize = 12.sp, color = subColor)
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        TextButton(onClick = onOpenAbout, modifier = Modifier.fillMaxWidth()) {
+                            Text("功能介绍与使用手册", color = if (dark) AccentBright else Accent)
+                        }
+                        TextButton(onClick = onCheckUpdate, modifier = Modifier.fillMaxWidth(), enabled = !updateChecking) {
+                            Text(
+                                if (updateChecking) "正在检查更新…" else "检查更新",
+                                color = if (dark) AccentBright else Accent,
+                            )
+                        }
+                    }
+                }
+            }
+
             Spacer(Modifier.height(20.dp))
             androidx.compose.material3.Button(
                 onClick = onSave,
@@ -2091,6 +2243,70 @@ private fun CardBox(bg: Color, content: @Composable () -> Unit) {
             .clip(RoundedCornerShape(12.dp))
             .background(bg),
     ) { content() }
+}
+
+/** 主题配色卡片：上半部渐变预览，下半部名称，选中加描边+对勾。 */
+@Composable
+private fun ThemeSwatchCard(
+    modifier: Modifier = Modifier,
+    name: String,
+    swatch: Color,
+    secondary: Color,
+    selected: Boolean,
+    dark: Boolean,
+    cardBg: Color,
+    rainbow: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val borderColor = if (selected) (if (dark) AccentBright else Accent) else if (dark) Color(0x20FFFFFF) else Color(0x12000000)
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(14))
+            .background(cardBg)
+            .border(if (selected) 2.dp else 1.dp, borderColor, RoundedCornerShape(14))
+            .clickable(onClick = onClick)
+            .padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(40.dp)
+                .clip(RoundedCornerShape(9))
+                .background(
+                    if (rainbow) {
+                        Brush.sweepGradient(
+                            listOf(
+                                Color(0xFFFF5252), Color(0xFFFFD740), Color(0xFF69F0AE),
+                                Color(0xFF40C4FF), Color(0xFF7C4DFF), Color(0xFFFF5252),
+                            ),
+                        )
+                    } else {
+                        Brush.linearGradient(listOf(swatch, secondary))
+                    },
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .background(Color(0x66000000)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            name,
+            fontSize = 11.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            color = if (selected) (if (dark) AccentBright else Accent) else if (dark) Color(0xFFBBBBBB) else Color(0xFF666666),
+        )
+    }
 }
 
 @Composable
@@ -2127,6 +2343,7 @@ private fun PathLine(
 }
 
 /** 长按记录后就地弹出的横向操作条：图标+文字横排，高度小、不遮键盘、不会超出屏幕底部。 */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun NoteActionMenu(
     note: com.liweiwen.voicenotes.data.Note,
@@ -2147,14 +2364,17 @@ private fun NoteActionMenu(
     val menuBg = if (dark) Color(0xFF243049) else Color(0xFFFFFFFF)
     val danger = Color(0xFFE64340)
 
-    Row(
+    // 自动换行：一行放不下时排到第二行，完整展示所有操作，不再横向裁切
+    FlowRow(
         modifier = Modifier
-            .clip(RoundedCornerShape(50))
+            .widthIn(max = 260.dp)
+            .clip(RoundedCornerShape(18))
             .background(menuBg)
-            .border(1.dp, if (dark) Color(0x2AFFFFFF) else Color(0x16000000), RoundedCornerShape(50))
-            .horizontalScroll(rememberScrollState())
+            .border(1.dp, if (dark) Color(0x2AFFFFFF) else Color(0x16000000), RoundedCornerShape(18))
             .padding(horizontal = 4.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+        verticalArrangement = Arrangement.Center,
+        maxItemsInEachRow = 5,
     ) {
         if (note.hasAudio) {
             MenuItem(Icons.Default.PlayArrow, "播放", accent) { onPlay(1.0f) }
@@ -2295,6 +2515,151 @@ private fun dayLabel(key: String): String {
         today -> "今天 · $md"
         yesterday -> "昨天 · $md"
         else -> md
+    }
+}
+
+/** 关于 / 使用手册：版本号、功能清单与交互说明、内置更新入口。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AboutPage(
+    dark: Boolean,
+    appVersion: String,
+    updateChecking: Boolean,
+    onBack: () -> Unit,
+    onCheckUpdate: () -> Unit,
+) {
+    val surface = if (dark) SurfaceDark else SurfaceLight
+    val background = if (dark) BgDark else BgLight
+    val textColor = if (dark) Color(0xFFECECEC) else Color(0xFF222222)
+    val subColor = if (dark) Color(0xFF9FB3B0) else Color(0xFF6B7C79)
+    val cardBg = if (dark) InputDark else Color.White
+    Scaffold(
+        containerColor = background,
+        topBar = {
+            TopAppBar(
+                title = { Text("关于与使用手册", fontSize = 18.sp, fontWeight = FontWeight.Medium) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = textColor)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = surface, titleContentColor = textColor),
+            )
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+        ) {
+            // 顶部品牌卡
+            CardBox(cardBg) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(64.dp)
+                            .clip(RoundedCornerShape(18))
+                            .background(Brush.linearGradient(listOf(if (dark) AccentBright else Accent, Secondary))),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("随", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text("随手说", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = textColor)
+                    Spacer(Modifier.height(4.dp))
+                    Text("版本 $appVersion", fontSize = 13.sp, color = subColor)
+                    Spacer(Modifier.height(4.dp))
+                    Text("本机优先的语音速记 · 数据不上传", fontSize = 12.sp, color = subColor)
+                    Spacer(Modifier.height(14.dp))
+                    TextButton(onClick = onCheckUpdate, enabled = !updateChecking) {
+                        Text(
+                            if (updateChecking) "正在检查更新…" else "检查更新",
+                            color = if (dark) AccentBright else Accent,
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+            SettingsSection(title = "功能介绍") {
+                CardBox(cardBg) {
+                    Column(Modifier.padding(14.dp)) {
+                        AboutFeature(dark = dark, AppIcons.Mic, "两种输入模式", "底部输入栏左下角按钮切换「可按住转文字」与「按住说话」。点按打字，长按录音。")
+                        AboutFeature(dark = dark, AppIcons.Restore, "录音滑动手势", "长按录音时：左滑取消，右滑转文字，原地松手按当前模式保存语音或文字。")
+                        AboutFeature(dark = dark, Icons.Default.Edit, "记录编辑", "点文字记录可复制；长按记录可播放 / 倍速 / 转文字 / 朗读 / 加标签 / 多选 / 删除。")
+                        AboutFeature(dark = dark, AppIcons.VolumeUp, "文字朗读", "长按文字记录选「朗读」，用系统中文语音读出；与语音播放互斥。")
+                        AboutFeature(dark = dark, AppIcons.Label, "标签分类", "长按记录加标签，首页顶部横向标签栏一键筛选。")
+                        AboutFeature(dark = dark, AppIcons.Calendar, "日历时间轴", "顶栏日历图标切换按日期分组的时间轴视图。")
+                        AboutFeature(dark = dark, Icons.Default.Delete, "回收站", "删除先进回收站保留 30 天，可在设置里恢复或彻底删除。")
+                        AboutFeature(dark = dark, AppIcons.Backup, "备份与恢复", "设置里导出 ZIP（含记录、设置与语音），导入即可整机迁移或恢复。")
+                        AboutFeature(dark = dark, Icons.Default.Settings, "主题系统", "浅色 / 深色 / 跟随系统 + 多套配色与自定义色，实时生效。")
+                        AboutFeature(dark = dark, Icons.Default.Lock, "本机存储", "录音 WAV 与文字全部保存在本机，仅转写时把音频流式发给阿里云百炼。")
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+            SettingsSection(title = "使用手册") {
+                CardBox(cardBg) {
+                    Column(Modifier.padding(14.dp)) {
+                        AboutStep(dark = dark, "1", "开始记录", "按住底部输入栏说话；或点一下输入栏打字。松手即保存。")
+                        AboutStep(dark = dark, "2", "切换模式", "点左下角声波/话筒圆钮，在「可按住转文字」和「按住说话」间切换。")
+                        AboutStep(dark = dark, "3", "转文字", "录音后长按该记录点「转文字」，需先在设置里填阿里云百炼 API Key。")
+                        AboutStep(dark = dark, "4", "管理与查找", "顶栏可搜索、多选、切换时间轴；长按记录可加标签、播放、朗读、删除。")
+                        AboutStep(dark = dark, "5", "备份", "设置 → 导出备份保存 ZIP；换机后导入恢复即可。")
+                        AboutStep(dark = dark, "6", "更新", "设置 → 检查更新，发现新版本可直接下载并跳转到系统安装界面。")
+                    }
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun AboutFeature(dark: Boolean, icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, desc: String) {
+    Row(modifier = Modifier.padding(vertical = 7.dp), verticalAlignment = Alignment.Top) {
+        Box(
+            modifier = Modifier
+                .size(30.dp)
+                .clip(RoundedCornerShape(9))
+                .background((if (dark) AccentBright else Accent).copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, contentDescription = null, tint = if (dark) AccentBright else Accent, modifier = Modifier.size(17.dp))
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = if (dark) Color(0xFFECECEC) else Color(0xFF222222))
+            Spacer(Modifier.height(2.dp))
+            Text(desc, fontSize = 12.sp, color = if (dark) Color(0xFF9FB3B0) else Color(0xFF6B7C79))
+        }
+    }
+}
+
+@Composable
+private fun AboutStep(dark: Boolean, no: String, title: String, desc: String) {
+    Row(modifier = Modifier.padding(vertical = 7.dp), verticalAlignment = Alignment.Top) {
+        Box(
+            modifier = Modifier
+                .size(24.dp)
+                .clip(CircleShape)
+                .background((if (dark) AccentBright else Accent).copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(no, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (dark) AccentBright else Accent)
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = if (dark) Color(0xFFECECEC) else Color(0xFF222222))
+            Spacer(Modifier.height(2.dp))
+            Text(desc, fontSize = 12.sp, color = if (dark) Color(0xFF9FB3B0) else Color(0xFF6B7C79))
+        }
     }
 }
 
