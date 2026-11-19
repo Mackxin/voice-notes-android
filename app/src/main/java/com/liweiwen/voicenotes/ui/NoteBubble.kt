@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -60,6 +61,10 @@ fun NoteBubble(
     menuOpen: Boolean = false,
     onDismissMenu: () -> Unit = {},
     menu: @Composable () -> Unit = {},
+    hidePrivate: Boolean = false,
+    privateRevealed: Boolean = false,
+    onRevealPrivate: () -> Unit = {},
+    onOpenReminder: () -> Unit = {},
 ) {
     val cardBg = if (dark) Color(0xFF1B2438) else Color(0xFFFFFFFF)
     val cardBorder = if (dark) Color(0x24FFFFFF) else Color(0x12000000)
@@ -126,14 +131,40 @@ fun NoteBubble(
                         .combinedClickable(onClick = onClick, onLongClick = onLongClick)
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                 ) {
+                    // 私密且未揭开：正文打码，点一下临时显示
+                    val masked = note.isPrivate && hidePrivate && !privateRevealed
                     // 纯语音记录不显示文字行，只留波形 + 时长
                     if (!voiceOnly) {
                         Text(
-                            note.text,
+                            if (masked) "🔒 私密记录 · 点击显示" else note.text,
                             fontSize = 15.sp,
                             lineHeight = 21.sp,
-                            color = textColor,
+                            color = if (masked) subText else textColor,
+                            modifier = if (masked) Modifier.clickable(onClick = onRevealPrivate) else Modifier,
                         )
+                    }
+                    // AI 摘要小字
+                    if (note.summary.isNotBlank() && !masked) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "✦ ${note.summary}",
+                            fontSize = 11.sp,
+                            color = accent,
+                        )
+                    }
+                    // 位置 / 提醒小徽标
+                    val badges = mutableListOf<String>()
+                    if (note.hasReminder) badges.add("⏰ 提醒")
+                    if (note.hasLocation) badges.add("📍 ${note.placeName}")
+                    if (note.isPrivate) badges.add("🔒")
+                    if (badges.isNotEmpty()) {
+                        Spacer(Modifier.height(5.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.clickable(enabled = note.hasReminder, onClick = onOpenReminder),
+                        ) {
+                            badges.forEach { Text(it, fontSize = 10.sp, color = subText) }
+                        }
                     }
                     if (showWave) {
                         Row(verticalAlignment = Alignment.CenterVertically) {

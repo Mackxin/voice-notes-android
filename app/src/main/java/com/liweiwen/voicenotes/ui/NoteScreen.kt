@@ -150,6 +150,20 @@ import androidx.compose.material3.Slider
 import com.liweiwen.voicenotes.audio.TtsSpeaker
 import com.liweiwen.voicenotes.data.BackupManager
 import com.liweiwen.voicenotes.data.UpdateManager
+import com.liweiwen.voicenotes.data.AppBus
+import com.liweiwen.voicenotes.data.AutoBackupWorker
+import com.liweiwen.voicenotes.data.ExportManager
+import com.liweiwen.voicenotes.data.LocationHelper
+import com.liweiwen.voicenotes.data.ReminderManager
+import com.liweiwen.voicenotes.data.SummaryManager
+import com.liweiwen.voicenotes.widget.NotesWidgetProvider
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DisplayMode
+import androidx.compose.material3.TimePicker
+import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberTimePickerState
+import java.util.Calendar
 import kotlin.math.hypot
 
 enum class SlideMode { CENTER, CANCEL, EDIT }
@@ -342,6 +356,27 @@ private fun NoteScreenContent(
     var updateDownloading by remember { mutableStateOf(false) }
     var updateProgress by remember { mutableStateOf(0) }
     var updateInfo by remember { mutableStateOf<UpdateManager.ReleaseInfo?>(null) }
+
+    // ===== v2.4：提醒 / 摘要 / 私密 / 定位 / 导出 / 隐私锁 =====
+    var reminderTarget by remember { mutableStateOf<Note?>(null) }
+    var showDatePicker by remember { mutableStateOf(false) }
+    var showTimePicker by remember { mutableStateOf(false) }
+    var pendingReminderMillis by remember { mutableStateOf(0L) }
+    var summarizingId by remember { mutableStateOf<String?>(null) }
+    var showTextExport by remember { mutableStateOf(false) }
+    var exportDone by remember { mutableStateOf("") }
+    var showLockSetup by remember { mutableStateOf(false) }
+    var lockPinInput by remember { mutableStateOf("") }
+    var lockMsg by remember { mutableStateOf("") }
+    // 新设置项的界面状态（与 SettingsStore 双向同步）
+    var autoBackup by remember { mutableStateOf(settingsStore.autoBackup) }
+    var headsetControl by remember { mutableStateOf(settingsStore.headsetControl) }
+    var locationEnabled by remember { mutableStateOf(settingsStore.locationEnabled) }
+    var lockEnabled by remember { mutableStateOf(settingsStore.lockEnabled) }
+    var lockBiometric by remember { mutableStateOf(settingsStore.lockBiometric) }
+    var hidePrivate by remember { mutableStateOf(settingsStore.hidePrivate) }
+    var summaryModelInput by remember { mutableStateOf(settingsStore.summaryModel) }
+    var privateRevealed by remember { mutableStateOf(false) }
     val appVersion = remember {
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "-" }
             .getOrDefault("-")
@@ -372,6 +407,25 @@ private fun NoteScreenContent(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         status = if (granted) "已获得麦克风权限，按住输入栏说话" else "需要麦克风权限才能录音"
+    }
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        status = if (granted) "已获得定位权限，可用「位置」标记记录" else "需要定位权限才能标记位置"
+    }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { /* 通知权限仅影响提醒展示，不阻断其他功能 */ }
+
+    // Android 13+ 首次请求通知权限，保证提醒能弹出来
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        ReminderManager.ensureChannel(context)
     }
 
     /** 打开 App 或从后台回来时读取剪贴板，复制变化也实时跟进。 */
@@ -418,6 +472,12 @@ private fun NoteScreenContent(
         onThemeColorChange(settingsStore.themeColor)
         onCustomAccentChange(settingsStore.customAccent)
         onHeroPinnedChange(settingsStore.heroPinned)
+        summaryModelInput = settingsStore.summaryModel
+        autoBackup = settingsStore.autoBackup
+        headsetControl = settingsStore.headsetControl
+        locationEnabled = settingsStore.locationEnabled
+        lockEnabled = settingsStore.lockEnabled
+        hidePrivate = settingsStore.hidePrivate
     }
 
     // 备份：系统文件选择器负责选保存位置 / 选备份包，App 只读写选中的 URI
@@ -594,8 +654,14 @@ private fun NoteScreenContent(
         }
     }
 
+    // 定时备份开关变化时启用/取消后台任务
+    LaunchedEffect(autoBackup) {
+        if (autoBackup) AutoBackupWorker.enable(context) else AutoBackupWorker.disable(context)
+    }
+
     fun refreshNotes() {
         notes = noteStore.all()
+        NotesWidgetProvider.refreshAll(context)
     }
 
     fun toggleSelected(id: String) {
@@ -728,6 +794,80 @@ private fun NoteScreenContent(
             }
             is AsrResult.Failure -> Toast.makeText(context, "转写失败：${result.message}", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    /** AI 摘要：把这条记录发给百炼提取要点，写入本机。 */
+    suspend fun summarizeNote(note: Note) {
+        if (settingsStore.apiKey.isBlank()) {
+            Toast.makeText(context, "请先在设置里填写 API Key", Toast.LENGTH_SHORT).show()
+            return
+        }
+        summarizingId = note.id
+        val result = SummaryManager.summarize(
+            apiKey = settingsStore.apiKey,
+            model = settingsStore.summaryModel,
+            text = note.text,
+        )
+        summarizingId = null
+        when (result) {
+            is SummaryManager.Result.Success -> {
+                noteStore.setSummary(note.id, result.text)
+                refreshNotes()
+                Toast.makeText(context, "摘要：${result.text}", Toast.LENGTH_LONG).show()
+                NotesWidgetProvider.refreshAll(context)
+            }
+            is SummaryManager.Result.Failure -> Toast.makeText(
+                context, "摘要失败：${result.message}", Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    /** 设置/取消提醒：先选日期再选时间，最后调度闹钟。 */
+    fun applyReminder(note: Note, millis: Long) {
+        noteStore.setReminder(note.id, millis)
+        ReminderManager.schedule(context, note.id, note.text, millis)
+        refreshNotes()
+        Toast.makeText(
+            context,
+            if (millis > 0) "已设置提醒" else "已取消提醒",
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+
+    /** 给记录附加当前位置（需定位权限，无权限时提示）。 */
+    fun tagLocation(note: Note) {
+        val place = LocationHelper.lastPlace(context)
+        if (place == null) {
+            Toast.makeText(context, "未获取到位置，请先在系统设置里允许定位", Toast.LENGTH_LONG).show()
+            return
+        }
+        noteStore.setLocation(note.id, place.latitude, place.longitude, place.label)
+        refreshNotes()
+        Toast.makeText(context, "已标记位置：${place.label}", Toast.LENGTH_SHORT).show()
+    }
+
+    /** 切换私密标记。 */
+    fun togglePrivate(note: Note) {
+        val next = !note.isPrivate
+        noteStore.setPrivate(note.id, next)
+        refreshNotes()
+        Toast.makeText(context, if (next) "已标记为私密" else "已取消私密", Toast.LENGTH_SHORT).show()
+    }
+
+    /** 导出文字：生成 Markdown / CSV 到下载目录。 */
+    fun exportText(kind: String) {
+        val all = noteStore.all()
+        val stamp = ExportManager.timestamp()
+        val path = if (kind == "md") {
+            ExportManager.writeToDownloads(
+                context, "随手说记录-$stamp.md", "text/markdown", ExportManager.markdown(all),
+            )
+        } else {
+            ExportManager.writeToDownloads(
+                context, "随手说记录-$stamp.csv", "text/csv", ExportManager.csv(all),
+            )
+        }
+        exportDone = if (path != null) "已导出 ${all.size} 条到 $path" else "导出失败，请检查存储权限"
     }
 
     fun copySelected() {
@@ -913,6 +1053,19 @@ private fun NoteScreenContent(
         elapsedSec = 0
     }
 
+    // 耳机线控 / 桌面小组件的录音事件：按一下切换，实现免手动录音
+    LaunchedEffect(Unit) {
+        AppBus.events.collect { event ->
+            when (event) {
+                AppBus.TOGGLE_RECORD -> {
+                    if (recording) stopRecording(SlideMode.CENTER) else startRecording()
+                }
+                AppBus.START_RECORD -> if (!recording) startRecording()
+                AppBus.STOP_RECORD -> if (recording) stopRecording(SlideMode.CENTER)
+            }
+        }
+    }
+
     LaunchedEffect(notes.size) {
         if (notes.isNotEmpty()) listState.animateScrollToItem(0)
     }
@@ -1073,6 +1226,13 @@ private fun NoteScreenContent(
                         onLongClick = { onBubbleLongClick(note) },
                         menuOpen = actionNote?.id == note.id,
                         onDismissMenu = { actionNote = null },
+                        hidePrivate = hidePrivate,
+                        privateRevealed = privateRevealed,
+                        onRevealPrivate = { privateRevealed = true },
+                        onOpenReminder = {
+                            reminderTarget = note
+                            showDatePicker = true
+                        },
                         menu = {
                             NoteActionMenu(
                                 note = note,
@@ -1092,6 +1252,15 @@ private fun NoteScreenContent(
                                 onEdit = { actionNote = null; editText = note.text; pendingEdit = note },
                                 onMultiSelect = { actionNote = null; multiSelect = true; selectedIds = setOf(note.id) },
                                 onDelete = { actionNote = null; pendingDelete = note },
+                                summarizing = summarizingId == note.id,
+                                onRemind = {
+                                    actionNote = null
+                                    reminderTarget = note
+                                    showDatePicker = true
+                                },
+                                onSummarize = { actionNote = null; scope.launch { summarizeNote(note) } },
+                                onPrivate = { actionNote = null; togglePrivate(note) },
+                                onLocation = { actionNote = null; tagLocation(note) },
                             )
                         },
                     )
@@ -1702,6 +1871,7 @@ private fun NoteScreenContent(
                 settingsStore.apiKey = apiKeyInput.trim()
                 settingsStore.workspaceId = workspaceInput.trim()
                 settingsStore.model = modelInput.trim().ifBlank { SettingsStore.DEFAULT_MODEL }
+                settingsStore.summaryModel = summaryModelInput.trim().ifBlank { "qwen-plus" }
                 showSettings = false
                 status = "设置已保存"
             },
@@ -1730,6 +1900,56 @@ private fun NoteScreenContent(
                     }
                 }
             },
+            // v2.4 新功能参数
+            autoBackup = autoBackup,
+            onAutoBackupChange = {
+                autoBackup = it
+                settingsStore.autoBackup = it
+            },
+            lastBackupTime = settingsStore.lastBackupTime,
+            headsetControl = headsetControl,
+            onHeadsetChange = {
+                headsetControl = it
+                settingsStore.headsetControl = it
+            },
+            locationEnabled = locationEnabled,
+            onLocationChange = {
+                locationEnabled = it
+                settingsStore.locationEnabled = it
+                if (it) {
+                    // 开启定位时请求权限
+                    locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                }
+            },
+            lockEnabled = lockEnabled,
+            onLockChange = {
+                if (it && settingsStore.lockPinHash.isBlank()) {
+                    showLockSetup = true
+                } else {
+                    lockEnabled = it
+                    settingsStore.lockEnabled = it
+                }
+            },
+            onLockSetup = { showLockSetup = true },
+            onLockDisable = {
+                lockEnabled = false
+                settingsStore.lockEnabled = false
+                Toast.makeText(context, "隐私锁已关闭", Toast.LENGTH_SHORT).show()
+            },
+            lockBiometric = lockBiometric,
+            onLockBiometricChange = {
+                lockBiometric = it
+                settingsStore.lockBiometric = it
+            },
+            hidePrivate = hidePrivate,
+            onHidePrivateChange = {
+                hidePrivate = it
+                settingsStore.hidePrivate = it
+                if (!it) privateRevealed = false
+            },
+            summaryModelInput = summaryModelInput,
+            onSummaryModelChange = { summaryModelInput = it },
+            onOpenTextExport = { showTextExport = true; exportDone = "" },
         )
     }
 
@@ -1756,6 +1976,130 @@ private fun NoteScreenContent(
                 }
             },
             updateChecking = updateChecking,
+        )
+    }
+
+    // ===== v2.4 对话框组 =====
+    // 1) 提醒：日期选择
+    if (showDatePicker) {
+        val dateState = rememberDatePickerState()
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDatePicker = false
+                    pendingReminderMillis = dateState.selectedDateMillis ?: System.currentTimeMillis()
+                    showTimePicker = true
+                }) { Text("下一步") }
+            },
+            dismissButton = { TextButton(onClick = { showDatePicker = false }) { Text("取消") } },
+        ) {
+            DatePicker(state = dateState, showModeToggle = false)
+        }
+    }
+
+    // 2) 提醒：时间选择（拿到日期后再选时分）
+    if (showTimePicker) {
+        val cal = Calendar.getInstance().apply { timeInMillis = pendingReminderMillis }
+        val timeState = rememberTimePickerState(
+            initialHour = cal.get(Calendar.HOUR_OF_DAY),
+            initialMinute = cal.get(Calendar.MINUTE),
+            is24Hour = true,
+        )
+        AlertDialog(
+            onDismissRequest = { showTimePicker = false },
+            title = { Text("提醒时间") },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    TimePicker(state = timeState)
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = {
+                        // 取消提醒
+                        reminderTarget?.let { applyReminder(it, 0L) }
+                        reminderTarget = null
+                        showTimePicker = false
+                    }) { Text("取消这条提醒", color = Color(0xFFE64340)) }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val chosen = Calendar.getInstance().apply {
+                        timeInMillis = pendingReminderMillis
+                        set(Calendar.HOUR_OF_DAY, timeState.hour)
+                        set(Calendar.MINUTE, timeState.minute)
+                        set(Calendar.SECOND, 0)
+                        set(Calendar.MILLISECOND, 0)
+                    }
+                    reminderTarget?.let { applyReminder(it, chosen.timeInMillis) }
+                    reminderTarget = null
+                    showTimePicker = false
+                }) { Text("确定") }
+            },
+            dismissButton = { TextButton(onClick = { showTimePicker = false }) { Text("取消") } },
+        )
+    }
+
+    // 3) 文字导出（Markdown / CSV）
+    if (showTextExport) {
+        AlertDialog(
+            onDismissRequest = { showTextExport = false },
+            title = { Text("导出文字记录") },
+            text = {
+                Column {
+                    Text("把全部记录导出到「下载/随手说」，共 ${noteStore.all().size} 条。", fontSize = 13.sp)
+                    if (exportDone.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(exportDone, fontSize = 12.sp, color = if (dark) AccentBright else Accent)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { exportText("md"); exportText("csv") }) {
+                    Text("导出 MD + CSV")
+                }
+            },
+            dismissButton = { TextButton(onClick = { showTextExport = false }) { Text("关闭") } },
+        )
+    }
+
+    // 4) 隐私锁密码设置
+    if (showLockSetup) {
+        AlertDialog(
+            onDismissRequest = { showLockSetup = false },
+            title = { Text("设置锁屏密码") },
+            text = {
+                Column {
+                    Text("4-12 位数字密码，只在本机保存摘要（SHA-256），忘记无法找回。", fontSize = 12.sp, color = subColor)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = lockPinInput,
+                        onValueChange = { lockPinInput = it.filter { c -> c.isDigit() }.take(12) },
+                        label = { Text("密码") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (lockMsg.isNotBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(lockMsg, fontSize = 12.sp, color = Color(0xFFE64340))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (lockPinInput.length < 4) {
+                        lockMsg = "密码至少 4 位"
+                    } else {
+                        settingsStore.lockPinHash = SettingsStore.sha256(lockPinInput)
+                        settingsStore.lockEnabled = true
+                        lockEnabled = true
+                        lockPinInput = ""
+                        lockMsg = ""
+                        showLockSetup = false
+                        Toast.makeText(context, "隐私锁已开启", Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text("确定") }
+            },
+            dismissButton = { TextButton(onClick = { showLockSetup = false }) { Text("取消") } },
         )
     }
 
@@ -2043,6 +2387,25 @@ private fun SettingsPage(
     updateChecking: Boolean,
     onOpenAbout: () -> Unit,
     onCheckUpdate: () -> Unit,
+    // v2.4 新增
+    autoBackup: Boolean,
+    onAutoBackupChange: (Boolean) -> Unit,
+    lastBackupTime: Long,
+    headsetControl: Boolean,
+    onHeadsetChange: (Boolean) -> Unit,
+    locationEnabled: Boolean,
+    onLocationChange: (Boolean) -> Unit,
+    lockEnabled: Boolean,
+    onLockChange: (Boolean) -> Unit,
+    onLockSetup: () -> Unit,
+    onLockDisable: () -> Unit,
+    lockBiometric: Boolean,
+    onLockBiometricChange: (Boolean) -> Unit,
+    hidePrivate: Boolean,
+    onHidePrivateChange: (Boolean) -> Unit,
+    summaryModelInput: String,
+    onSummaryModelChange: (String) -> Unit,
+    onOpenTextExport: () -> Unit,
 ) {
     val surface = if (dark) SurfaceDark else SurfaceLight
     val background = if (dark) BgDark else BgLight
@@ -2115,6 +2478,9 @@ private fun SettingsPage(
                             TextButton(onClick = onImport, modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) {
                                 Text("导入恢复", fontSize = 12.sp, color = if (dark) AccentBright else Accent)
                             }
+                        }
+                        TextButton(onClick = onOpenTextExport, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(0.dp)) {
+                            Text("导出文字记录（Markdown / CSV）", fontSize = 12.sp, color = if (dark) AccentBright else Accent)
                         }
                     }
                 }
@@ -2267,6 +2633,99 @@ private fun SettingsPage(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = summaryModelInput,
+                        onValueChange = onSummaryModelChange,
+                        label = { Text("AI 摘要模型（推荐 qwen-plus）") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // 智能与自动化：定时备份 / 耳机线控 / 地理标记
+            SettingsSection(title = "智能与自动化") {
+                CardBox(cardBg) {
+                    Column(Modifier.padding(16.dp)) {
+                        SettingsSwitchRow(
+                            title = "每天自动备份",
+                            desc = if (lastBackupTime > 0) {
+                                "上次备份：${java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(lastBackupTime))} · 存到 下载/随手说/自动备份"
+                            } else "每天自动打包到 下载/随手说/自动备份，不联网",
+                            checked = autoBackup,
+                            dark = dark,
+                            onChange = onAutoBackupChange,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(if (dark) Color(0x24FFFFFF) else Color(0x14000000)))
+                        Spacer(Modifier.height(10.dp))
+                        SettingsSwitchRow(
+                            title = "耳机线控录音",
+                            desc = "按一下耳机播放键开始/停止录音（App 在前台时）",
+                            checked = headsetControl,
+                            dark = dark,
+                            onChange = onHeadsetChange,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(if (dark) Color(0x24FFFFFF) else Color(0x14000000)))
+                        Spacer(Modifier.height(10.dp))
+                        SettingsSwitchRow(
+                            title = "记录附带位置",
+                            desc = "标记记录时附带当前经纬度（需定位权限）",
+                            checked = locationEnabled,
+                            dark = dark,
+                            onChange = onLocationChange,
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // 隐私与安全
+            SettingsSection(title = "隐私与安全") {
+                CardBox(cardBg) {
+                    Column(Modifier.padding(16.dp)) {
+                        SettingsSwitchRow(
+                            title = "隐私锁",
+                            desc = if (lockEnabled) "进入 App 需验证密码或指纹" else "开启后需设置密码，离开再回来需重新解锁",
+                            checked = lockEnabled,
+                            dark = dark,
+                            onChange = onLockChange,
+                        )
+                        if (lockEnabled) {
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = onLockSetup, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                                    Text("修改密码", fontSize = 12.sp, color = if (dark) AccentBright else Accent)
+                                }
+                                TextButton(onClick = onLockDisable, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                                    Text("关闭隐私锁", fontSize = 12.sp, color = Color(0xFFE64340))
+                                }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            SettingsSwitchRow(
+                                title = "指纹/面容解锁",
+                                desc = "本机支持时优先用生物识别",
+                                checked = lockBiometric,
+                                dark = dark,
+                                onChange = onLockBiometricChange,
+                            )
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(if (dark) Color(0x24FFFFFF) else Color(0x14000000)))
+                        Spacer(Modifier.height(10.dp))
+                        SettingsSwitchRow(
+                            title = "隐藏私密记录内容",
+                            desc = "私密记录在列表里打码，点一下临时显示",
+                            checked = hidePrivate,
+                            dark = dark,
+                            onChange = onHidePrivateChange,
+                        )
+                    }
                 }
             }
 
@@ -2320,6 +2779,32 @@ private fun SettingsPage(
             }
             Spacer(Modifier.height(24.dp))
         }
+    }
+}
+
+@Composable
+private fun SettingsSwitchRow(
+    title: String,
+    desc: String,
+    checked: Boolean,
+    dark: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontSize = 13.sp, color = if (dark) Color(0xFFECECEC) else Color(0xFF222222))
+            Spacer(Modifier.height(2.dp))
+            Text(desc, fontSize = 11.sp, color = if (dark) Color(0xFF8A8A8A) else Color(0xFF999999))
+        }
+        Spacer(Modifier.width(10.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = if (dark) AccentBright else Accent,
+            ),
+        )
     }
 }
 
@@ -2633,6 +3118,11 @@ private fun NoteActionMenu(
     onEdit: () -> Unit,
     onMultiSelect: () -> Unit,
     onDelete: () -> Unit,
+    summarizing: Boolean = false,
+    onRemind: () -> Unit = {},
+    onSummarize: () -> Unit = {},
+    onPrivate: () -> Unit = {},
+    onLocation: () -> Unit = {},
 ) {
     val accent = if (dark) AccentBright else Accent
     val menuBg = if (dark) Color(0xFF243049) else Color(0xFFFFFFFF)
@@ -2641,7 +3131,7 @@ private fun NoteActionMenu(
     // 自动换行：一行放不下时排到第二行，完整展示所有操作，不再横向裁切
     FlowRow(
         modifier = Modifier
-            .widthIn(max = 260.dp)
+            .widthIn(max = 250.dp)
             .clip(RoundedCornerShape(18))
             .background(menuBg)
             .border(1.dp, if (dark) Color(0x2AFFFFFF) else Color(0x16000000), RoundedCornerShape(18))
@@ -2668,6 +3158,19 @@ private fun NoteActionMenu(
             MenuItem(AppIcons.VolumeUp, if (ttsSpeaking) "停止" else "朗读", accent, onClick = onRead)
         }
         MenuItem(AppIcons.Label, "标签", accent, onClick = onTag)
+        // v2.4 新操作：提醒 / AI 摘要 / 私密 / 位置
+        MenuItem(AppIcons.Alarm, "提醒", accent, onClick = onRemind)
+        if (note.text.isNotBlank() && note.text != "[语音消息]") {
+            MenuItem(
+                AppIcons.AutoAwesome,
+                if (summarizing) "摘要中" else "摘要",
+                accent,
+                enabled = !summarizing,
+                onClick = onSummarize,
+            )
+        }
+        MenuItem(AppIcons.Lock, if (note.isPrivate) "取消私密" else "私密", accent, onClick = onPrivate)
+        MenuItem(AppIcons.LocationOn, "位置", accent, onClick = onLocation)
         MenuItem(AppIcons.SelectAll, "多选", accent, onClick = onMultiSelect)
         MenuItem(Icons.Default.Delete, "删除", danger, onClick = onDelete)
     }
@@ -2873,6 +3376,14 @@ private fun AboutPage(
                         AboutFeature(dark = dark, AppIcons.Backup, "备份与恢复", "设置里导出 ZIP（含记录、设置与语音），导入即可整机迁移或恢复。")
                         AboutFeature(dark = dark, Icons.Default.Settings, "主题系统", "浅色 / 深色 / 跟随系统 + 多套配色与自定义色，实时生效。")
                         AboutFeature(dark = dark, Icons.Default.Lock, "本机存储", "录音 WAV 与文字全部保存在本机，仅转写时把音频流式发给阿里云百炼。")
+                        AboutFeature(dark = dark, AppIcons.Alarm, "待办提醒", "长按记录选「提醒」，选日期时间，到点弹出通知，点击直达该记录。")
+                        AboutFeature(dark = dark, AppIcons.AutoAwesome, "AI 摘要", "长按文字记录选「摘要」，用百炼把要点压成一句话，显示在气泡里。")
+                        AboutFeature(dark = dark, AppIcons.Backup, "定时备份", "设置里开启每天自动备份，ZIP 存到 下载/随手说/自动备份，全程离线。")
+                        AboutFeature(dark = dark, AppIcons.Download, "文字导出", "设置里一键把全部记录导出为 Markdown / CSV，存到 下载/随手说。")
+                        AboutFeature(dark = dark, AppIcons.Lock, "隐私锁", "设置密码或指纹，离开再回来需重新解锁；私密记录可打码隐藏。")
+                        AboutFeature(dark = dark, AppIcons.Headset, "耳机线控", "App 在前台时按一下耳机播放键即可开始/停止录音。")
+                        AboutFeature(dark = dark, AppIcons.LocationOn, "地理标记", "长按记录选「位置」附上当前经纬度（需系统定位权限）。")
+                        AboutFeature(dark = dark, AppIcons.GridView, "桌面小组件", "长按桌面添加「随手说」小组件，一键录音、查看最近两条记录。")
                     }
                 }
             }
@@ -2887,6 +3398,7 @@ private fun AboutPage(
                         AboutStep(dark = dark, "4", "管理与查找", "顶栏可搜索、多选、切换时间轴；长按记录可加标签、播放、朗读、删除。")
                         AboutStep(dark = dark, "5", "备份", "设置 → 导出备份保存 ZIP；换机后导入恢复即可。")
                         AboutStep(dark = dark, "6", "更新", "设置 → 检查更新，发现新版本可直接下载并跳转到系统安装界面。")
+                        AboutStep(dark = dark, "7", "更多玩法", "长按记录可设提醒/摘要/私密/位置；设置里开定时备份、隐私锁、耳机线控；桌面可加小组件。")
                     }
                 }
             }

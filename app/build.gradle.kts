@@ -13,8 +13,8 @@ android {
         applicationId = "com.liweiwen.voicenotes"
         minSdk = 26
         targetSdk = 34
-        versionCode = 19
-        versionName = "2.3.0"
+        versionCode = 20
+        versionName = "2.4.0"
     }
 
     buildTypes {
@@ -57,5 +57,8 @@ dependencies {
     // 原 extended 包 classes.jar 约 36MB，会让安装包凭空大出十几 MB。
     implementation("androidx.compose.material:material-icons-core:1.6.8")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // 定时备份：WorkManager；隐私锁：系统生物识别。两者均为轻量官方库。
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("androidx.biometric:biometric:1.1.0")
     debugImplementation("androidx.compose.ui:ui-tooling:1.6.8")
 }

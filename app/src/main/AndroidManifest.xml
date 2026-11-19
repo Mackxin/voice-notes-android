@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- 内置更新：拉起系统安装界面需要 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- v2.4：提醒通知 / 地理标记 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <application
         android:allowBackup="true"
@@ -35,6 +39,30 @@
                 <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
             </intent-filter>
         </provider>
+
+        <!-- 待办提醒到点通知 -->
+        <receiver
+            android:name=".data.ReminderReceiver"
+            android:exported="false" />
+
+        <!-- 桌面小组件：一键录音 + 最近记录 -->
+        <receiver
+            android:name=".widget.NotesWidgetProvider"
+            android:exported="true"
+            android:label="随手说">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.liweiwen.voicenotes.widget.RECORD" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/appwidget_info" />
+        </receiver>
+
+        <activity
+            android:name=".BiometricActivity"
+            android:exported="false"
+            android:theme="@style/Theme.VoiceNotes.Transparent" />
 
         <activity
             android:name=".MainActivity"

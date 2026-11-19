@@ -1,6 +1,8 @@
 # 随手说 · VoiceNotes
 
-一个「微信式」语音速记安卓 App（v2.3.0）：**底部输入栏有两种模式——「可按住转文字」和「按住说话」，点左下角按钮即可来回切换，切换带滑动淡入与配色渐变过渡**（对齐微信 8.0.80 的「可按住 转文字」交互）。录音与文字全部保存在本机，语音识别走阿里云百炼 DashScope；声纹光球录音动效、卡片式记录、首页概览、剪贴板快贴一应俱全。
+一个「微信式」语音速记安卓 App（v2.4.0）：**底部输入栏有两种模式——「可按住转文字」和「按住说话」，点左下角按钮即可来回切换，切换带滑动淡入与配色渐变过渡**（对齐微信 8.0.80 的「可按住 转文字」交互）。录音与文字全部保存在本机，语音识别走阿里云百炼 DashScope；声纹光球录音动效、卡片式记录、首页概览、剪贴板快贴一应俱全。
+
+v2.4.0 重点（8 项新功能一次补齐）：**待办提醒**（长按记录选时间，到点通知直达）、**AI 摘要**（百炼把转写压成一句话显示在气泡）、**桌面小组件**（一键录音 + 最近两条记录）、**定时备份**（每天自动打包 ZIP 到下载目录）、**Markdown/CSV 导出**（文字记录一键导出到手机）、**隐私锁**（密码/指纹解锁 + 私密记录打码）、**耳机线控**（按耳机键开始/停止录音）、**地理标记**（记录附带当前经纬度）。
 
 v2.3.0 重点（本机文件看得见）：**App 内文件浏览器**（点「记录文件」「语音目录」不再跳系统选择器，而是直接在 App 内显示完整路径、文件列表、大小与修改时间，路径可一键复制）、**一键导出到手机**（每个文件可分享，或导出到「下载 / 随手说」，之后在系统文件管理器里就能直接找到）、**说明私有目录限制**（页面内明确告知 App 私有目录无法被系统文件管理器直接访问，导出即可解决）。
 
@@ -146,21 +148,31 @@ v1.5.0 重点：**安装包大幅瘦身**（debug 16MB→9.2MB，release 仅 1.1
 
 ```
 app/src/main/java/com/liweiwen/voicenotes/
-├── MainActivity.kt              # 入口
+├── MainActivity.kt              # 入口（耳机线控注册 + 小组件触发 + 隐私锁门禁）
+├── BiometricActivity.kt         # 透明生物识别验证页（指纹/面容）
 ├── audio/PcmRecorder.kt         # 麦克风 PCM 采集
 ├── audio/WavWriter.kt           # PCM 封装成 WAV 落盘
 ├── audio/AudioPlayer.kt         # 本地 WAV 回听
 ├── asr/DashScopeAsr.kt          # 百炼 WebSocket 流式识别
-├── data/Stores.kt               # 本地笔记 + 设置存储（含回收站标记、标签、备份导入接口）
-├── data/BackupManager.kt        # 备份导出 / 导入恢复（ZIP：记录 + 设置 + WAV）
+├── data/Stores.kt               # 本地笔记 + 设置存储（提醒/摘要/私密/位置字段 + 8 项开关）
+├── data/BackupManager.kt        # 备份导出 / 导入恢复（ZIP：记录 + 设置 + WAV，全字段兼容）
 ├── data/UpdateManager.kt        # 内置更新：查 GitHub Releases → 下载 APK → 跳系统安装界面
 ├── data/VoiceNotesDocumentsProvider.kt # 把本机数据目录暴露给系统「文件」应用
+├── data/AppBus.kt               # 轻量事件总线（耳机/小组件触发录音）
+├── data/ReminderManager.kt      # 待办提醒：AlarmManager + 通知
+├── data/SummaryManager.kt       # AI 摘要：百炼对话兼容接口
+├── data/AutoBackupWorker.kt     # 定时备份：WorkManager 每天打包 ZIP
+├── data/ExportManager.kt        # Markdown / CSV 导出到下载目录
+├── data/HeadsetButtonReceiver.kt# 耳机线控录音
+├── data/LocationHelper.kt       # 地理标记（系统 LocationManager）
+├── widget/NotesWidgetProvider.kt# 桌面小组件（RemoteViews）
 ├── audio/TtsSpeaker.kt          # 系统内置 TTS 朗读文字记录
 └── ui/
     ├── NoteScreen.kt            # 主界面 + 长按手势 + 操作面板 + 设置 + 多选
-    ├── NoteBubble.kt            # 记录气泡（语音波形/时长，点按播放，长按弹面板）
+    ├── NoteBubble.kt            # 记录气泡（波形/摘要/位置/私密/提醒徽标）
+    ├── LockScreen.kt            # 隐私锁屏（密码 + 指纹）
     ├── RecordingPanel.kt        # 声纹光球 + 左右跟手操作块录音面板
-    └── AppIcons.kt              # core 包缺失的 6 个图标（官方 pathData 本地定义）
+    └── AppIcons.kt              # core 包缺失的图标（官方 pathData 本地定义）
 ```
 
 ## 构建
@@ -177,7 +189,7 @@ app/src/main/java/com/liweiwen/voicenotes/
 
 ## 下载与更新
 
-- **最新版本**：v2.3.0 — [GitHub Release](https://github.com/Mackxin/voice-notes-android/releases/tag/v2.3.0)；APK 直链：[voice-notes-v2.3.0-release.apk](https://github.com/Mackxin/voice-notes-android/releases/download/v2.3.0/voice-notes-v2.3.0-release.apk)。
+- **最新版本**：v2.4.0 — [GitHub Release](https://github.com/Mackxin/voice-notes-android/releases/tag/v2.4.0)；APK 直链：[voice-notes-v2.4.0-release.apk](https://github.com/Mackxin/voice-notes-android/releases/download/v2.4.0/voice-notes-v2.4.0-release.apk)。
 - **App 内更新**：设置 →「关于与更新」→「检查更新」。应用读取 GitHub Releases 最新版；仓库发布带 APK 的新 Release 后，此处即可下载并跳转系统安装界面。
 - **安装权限**：首次安装或覆盖安装需系统允许「未知来源」。
 

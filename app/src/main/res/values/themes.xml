@@ -4,4 +4,11 @@
         <item name="android:statusBarColor">#FFF7F7F7</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>
+
+    <!-- 生物识别验证用的透明 Activity -->
+    <style name="Theme.VoiceNotes.Transparent" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
 </resources>

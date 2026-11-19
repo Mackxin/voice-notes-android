@@ -108,6 +108,12 @@ object BackupManager {
                         durationMs = obj.optLong("durationMs"),
                         tags = tags.distinct(),
                         deletedAt = obj.optLong("deletedAt"),
+                        reminderAt = obj.optLong("reminderAt"),
+                        summary = obj.optString("summary"),
+                        isPrivate = obj.optBoolean("isPrivate"),
+                        latitude = obj.optDouble("latitude", 0.0),
+                        longitude = obj.optDouble("longitude", 0.0),
+                        placeName = obj.optString("placeName"),
                     ),
                 )
             }
@@ -124,6 +130,12 @@ object BackupManager {
                 settingsStore.themeColor = s.optString("theme_color", settingsStore.themeColor)
                 settingsStore.customAccent = s.optString("custom_accent", settingsStore.customAccent)
                 settingsStore.heroPinned = s.optBoolean("hero_pinned", settingsStore.heroPinned)
+                settingsStore.summaryModel = s.optString("summary_model", settingsStore.summaryModel)
+                settingsStore.autoBackup = s.optBoolean("auto_backup", settingsStore.autoBackup)
+                settingsStore.headsetControl = s.optBoolean("headset_control", settingsStore.headsetControl)
+                settingsStore.locationEnabled = s.optBoolean("location_enabled", settingsStore.locationEnabled)
+                settingsStore.lockEnabled = s.optBoolean("lock_enabled", settingsStore.lockEnabled)
+                settingsStore.hidePrivate = s.optBoolean("hide_private", settingsStore.hidePrivate)
                 settingsRestored = true
             }
             return BackupResult(added, audioCount, settingsRestored)
@@ -147,7 +159,13 @@ object BackupManager {
                     .put("audioPath", note.audioPath?.let { File(it).name }.orEmpty())
                     .put("durationMs", note.durationMs)
                     .put("tags", tags)
-                    .put("deletedAt", note.deletedAt),
+                    .put("deletedAt", note.deletedAt)
+                    .put("reminderAt", note.reminderAt)
+                    .put("summary", note.summary)
+                    .put("isPrivate", note.isPrivate)
+                    .put("latitude", note.latitude)
+                    .put("longitude", note.longitude)
+                    .put("placeName", note.placeName),
             )
         }
         return root.toString()
@@ -161,4 +179,10 @@ object BackupManager {
         .put("theme_color", s.themeColor)
         .put("custom_accent", s.customAccent)
         .put("hero_pinned", s.heroPinned)
+        .put("summary_model", s.summaryModel)
+        .put("auto_backup", s.autoBackup)
+        .put("headset_control", s.headsetControl)
+        .put("location_enabled", s.locationEnabled)
+        .put("lock_enabled", s.lockEnabled)
+        .put("hide_private", s.hidePrivate)
 }

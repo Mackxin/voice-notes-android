@@ -21,9 +21,18 @@ data class Note(
     val durationMs: Long = 0L,
     val tags: List<String> = emptyList(),
     val deletedAt: Long = 0L,
+    // ===== v2.4 新增字段（全部带默认值，旧数据与备份包无缝兼容） =====
+    val reminderAt: Long = 0L,      // 提醒时间戳，0 表示未设置
+    val summary: String = "",       // AI 摘要（百炼生成）
+    val isPrivate: Boolean = false, // 私密记录，锁屏时隐藏
+    val latitude: Double = 0.0,     // 地理标记纬度
+    val longitude: Double = 0.0,    // 地理标记经度
+    val placeName: String = "",     // 位置名称（经纬度或反查地址）
 ) {
     val hasAudio: Boolean get() = !audioPath.isNullOrBlank()
     val isTrashed: Boolean get() = deletedAt > 0L
+    val hasReminder: Boolean get() = reminderAt > 0L
+    val hasLocation: Boolean get() = placeName.isNotBlank() || (latitude != 0.0 && longitude != 0.0)
 
     /**
      * 显示用时长。旧版本把秒当成毫秒写入 notes.json，导致记录全是 0:00；
@@ -115,6 +124,41 @@ class NoteStore(context: Context) {
         notes[index] = notes[index].copy(tags = tags.distinct().filter { it.isNotBlank() })
         save()
     }
+
+    /** 设置提醒时间（0 表示取消提醒）。 */
+    fun setReminder(id: String, reminderAt: Long) {
+        val index = notes.indexOfFirst { it.id == id }
+        if (index < 0) return
+        notes[index] = notes[index].copy(reminderAt = reminderAt)
+        save()
+    }
+
+    /** AI 摘要写入。 */
+    fun setSummary(id: String, summary: String) {
+        val index = notes.indexOfFirst { it.id == id }
+        if (index < 0) return
+        notes[index] = notes[index].copy(summary = summary.trim())
+        save()
+    }
+
+    /** 切换私密标记。 */
+    fun setPrivate(id: String, value: Boolean) {
+        val index = notes.indexOfFirst { it.id == id }
+        if (index < 0) return
+        notes[index] = notes[index].copy(isPrivate = value)
+        save()
+    }
+
+    /** 写入地理标记。 */
+    fun setLocation(id: String, latitude: Double, longitude: Double, placeName: String) {
+        val index = notes.indexOfFirst { it.id == id }
+        if (index < 0) return
+        notes[index] = notes[index].copy(latitude = latitude, longitude = longitude, placeName = placeName)
+        save()
+    }
+
+    /** 到期的提醒（reminderAt 在 now 之前、未删除），供启动与通知点击后刷新。 */
+    fun dueReminders(now: Long): List<Note> = notes.filter { !it.isTrashed && it.hasReminder && it.reminderAt <= now }
 
     /** 所有用过的标签，按使用次数从多到少，供筛选栏与标签选择用。 */
     fun allTags(): List<String> = notes
@@ -259,6 +303,12 @@ class NoteStore(context: Context) {
                     durationMs = obj.optLong("durationMs"),
                     tags = tags.distinct(),
                     deletedAt = obj.optLong("deletedAt"),
+                    reminderAt = obj.optLong("reminderAt"),
+                    summary = obj.optString("summary"),
+                    isPrivate = obj.optBoolean("isPrivate"),
+                    latitude = obj.optDouble("latitude", 0.0),
+                    longitude = obj.optDouble("longitude", 0.0),
+                    placeName = obj.optString("placeName"),
                 )
                 // 老数据顺手修正一次时长（旧版把秒当成毫秒写进 JSON）
                 notes.add(
@@ -286,7 +336,13 @@ class NoteStore(context: Context) {
                     .put("audioPath", note.audioPath ?: "")
                     .put("durationMs", note.durationMs)
                     .put("tags", tags)
-                    .put("deletedAt", note.deletedAt),
+                    .put("deletedAt", note.deletedAt)
+                    .put("reminderAt", note.reminderAt)
+                    .put("summary", note.summary)
+                    .put("isPrivate", note.isPrivate)
+                    .put("latitude", note.latitude)
+                    .put("longitude", note.longitude)
+                    .put("placeName", note.placeName),
             )
         }
         file.writeText(array.toString())
@@ -347,7 +403,60 @@ class SettingsStore(context: Context) {
             "wss://${workspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference"
         }
 
+    // ===== v2.4 新增设置 =====
+    /** 摘要模型（对话类），默认 qwen-plus。 */
+    var summaryModel: String
+        get() = prefs.getString("summary_model", "qwen-plus").orEmpty()
+        set(value) { prefs.edit().putString("summary_model", value).apply() }
+
+    /** 定时备份开关。 */
+    var autoBackup: Boolean
+        get() = prefs.getBoolean("auto_backup", false)
+        set(value) { prefs.edit().putBoolean("auto_backup", value).apply() }
+
+    /** 上次定时备份时间戳。 */
+    var lastBackupTime: Long
+        get() = prefs.getLong("last_backup_time", 0L)
+        set(value) { prefs.edit().putLong("last_backup_time", value).apply() }
+
+    /** 耳机线控录音开关。 */
+    var headsetControl: Boolean
+        get() = prefs.getBoolean("headset_control", true)
+        set(value) { prefs.edit().putBoolean("headset_control", value).apply() }
+
+    /** 地理标记开关。 */
+    var locationEnabled: Boolean
+        get() = prefs.getBoolean("location_enabled", false)
+        set(value) { prefs.edit().putBoolean("location_enabled", value).apply() }
+
+    /** 隐私锁开关。 */
+    var lockEnabled: Boolean
+        get() = prefs.getBoolean("lock_enabled", false)
+        set(value) { prefs.edit().putBoolean("lock_enabled", value).apply() }
+
+    /** 隐私锁密码（SHA-256 十六进制），空表示未设置。 */
+    var lockPinHash: String
+        get() = prefs.getString("lock_pin_hash", "").orEmpty()
+        set(value) { prefs.edit().putString("lock_pin_hash", value).apply() }
+
+    /** 是否用系统生物识别（指纹/面容）解锁，需 lockEnabled。 */
+    var lockBiometric: Boolean
+        get() = prefs.getBoolean("lock_biometric", true)
+        set(value) { prefs.edit().putBoolean("lock_biometric", value).apply() }
+
+    /** 私密记录在列表里是否用遮罩隐藏内容。 */
+    var hidePrivate: Boolean
+        get() = prefs.getBoolean("hide_private", true)
+        set(value) { prefs.edit().putBoolean("hide_private", value).apply() }
+
     companion object {
         const val DEFAULT_MODEL = "paraformer-realtime-v2"
+
+        /** 简单的 SHA-256，避免明文存密码。 */
+        fun sha256(input: String): String = runCatching {
+            val bytes = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(input.toByteArray(Charsets.UTF_8))
+            bytes.joinToString("") { "%02x".format(it) }
+        }.getOrDefault("")
     }
 }
