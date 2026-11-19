@@ -58,6 +58,7 @@ fun NoteBubble(
     selected: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    onDoubleClick: () -> Unit = {},
     menuOpen: Boolean = false,
     onDismissMenu: () -> Unit = {},
     menu: @Composable () -> Unit = {},
@@ -126,10 +127,14 @@ fun NoteBubble(
                     modifier = Modifier
                         .widthIn(max = 290.dp)
                         .clip(bubbleShape)
-                        .background(cardBg)
-                        .border(1.dp, bubbleBorder, bubbleShape)
-                        .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    .background(cardBg)
+                    .border(1.dp, bubbleBorder, bubbleShape)
+                    .combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onLongClick,
+                        onDoubleClick = onDoubleClick,
+                    )
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
                 ) {
                     // 私密且未揭开：正文打码，点一下临时显示
                     val masked = note.isPrivate && hidePrivate && !privateRevealed

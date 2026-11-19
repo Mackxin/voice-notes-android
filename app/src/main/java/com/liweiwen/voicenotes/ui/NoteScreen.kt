@@ -55,6 +55,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -71,11 +72,14 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -309,6 +313,9 @@ private fun NoteScreenContent(
     var showSettings by remember { mutableStateOf(false) }
     var searchOpen by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+    // v2.5：右上角菜单展开状态；标题点击滚动方向（true 下一次滚到底）
+    var appMenuOpen by remember { mutableStateOf(false) }
+    var titleScrollToBottom by remember { mutableStateOf(true) }
     var pendingDelete by remember { mutableStateOf<Note?>(null) }
     var pendingEdit by remember { mutableStateOf<Note?>(null) }
     // 长按记录弹出的操作面板；null 表示不显示
@@ -426,6 +433,8 @@ private fun NoteScreenContent(
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         ReminderManager.ensureChannel(context)
+        // v2.5 兜底：系统可能已清掉闹钟，按本机记录重建所有未到期提醒
+        ReminderManager.rescheduleAll(context, noteStore.all())
     }
 
     /** 打开 App 或从后台回来时读取剪贴板，复制变化也实时跟进。 */
@@ -664,11 +673,24 @@ private fun NoteScreenContent(
         NotesWidgetProvider.refreshAll(context)
     }
 
+    /** 点标题栏「随手说」：到底部 ↔ 回顶部往复切换。 */
+    fun toggleTitleScroll() {
+        scope.launch {
+            val lastIndex = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+            // 列表 reverseLayout：index 0 在底部；时间轴正常布局：末项在底部
+            val bottomIndex = if (viewMode == ViewMode.LIST) 0 else lastIndex
+            val topIndex = if (viewMode == ViewMode.LIST) lastIndex else 0
+            val target = if (titleScrollToBottom) bottomIndex else topIndex
+            runCatching { listState.animateScrollToItem(target) }
+            titleScrollToBottom = !titleScrollToBottom
+        }
+    }
+
     fun toggleSelected(id: String) {
         selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
     }
 
-    /** 点按气泡：语音播放/停止（用当前倍速），文字复制。 */
+    /** 点按气泡：语音播放/停止（用当前倍速）；文字记录不再单击复制，改为双击。 */
     fun onBubbleClick(note: Note) {
         if (multiSelect) {
             toggleSelected(note.id)
@@ -684,10 +706,17 @@ private fun NoteScreenContent(
                 audioPlayer.play(path, playbackSpeed, onFinished = { playingPath = null })
                 playingPath = path
             }
-        } else {
-            clipboard.setText(AnnotatedString(note.text))
-            Toast.makeText(context, "已复制文字", Toast.LENGTH_SHORT).show()
         }
+        // 纯文字记录单击不再复制，避免误触；复制统一走双击
+    }
+
+    /** 双击气泡：复制文字（纯文字与已转写语音都支持）。 */
+    fun onBubbleDoubleClick(note: Note) {
+        if (multiSelect) return
+        val text = note.text
+        if (text.isBlank() || text == "[语音消息]") return
+        clipboard.setText(AnnotatedString(text))
+        Toast.makeText(context, "已复制文字", Toast.LENGTH_SHORT).show()
     }
 
     /** 长按气泡：弹出操作面板（多选态下仍为切换选中）。 */
@@ -1115,12 +1144,24 @@ private fun NoteScreenContent(
                     } else if (multiSelect) {
                         Text("已选 ${selectedIds.size} 项", fontSize = 18.sp, fontWeight = FontWeight.Medium)
                     } else {
-                        Text(
-                            "随手说",
-                            fontSize = 19.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (dark) AccentBright else Accent,
-                        )
+                        Row(
+                            modifier = Modifier.clickable { toggleTitleScroll() },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "随手说",
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (dark) AccentBright else Accent,
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Icon(
+                                Icons.Default.KeyboardArrowDown,
+                                contentDescription = "滚动到底部或顶部",
+                                tint = if (dark) AccentBright else Accent,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
                     }
                 },
                 actions = {
@@ -1169,6 +1210,88 @@ private fun NoteScreenContent(
                             showSettings = true
                         }) {
                             Icon(Icons.Default.Settings, contentDescription = "设置", tint = textColor)
+                        }
+                    }
+                    // v2.5：统一菜单入口
+                    Box {
+                        IconButton(onClick = { appMenuOpen = true }) {
+                            Icon(Icons.Default.Menu, contentDescription = "菜单", tint = textColor)
+                        }
+                        DropdownMenu(
+                            expanded = appMenuOpen,
+                            onDismissRequest = { appMenuOpen = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(if (viewMode == ViewMode.LIST) "时间轴视图" else "列表视图") },
+                                onClick = {
+                                    appMenuOpen = false
+                                    exitTextMode()
+                                    activeTag = null
+                                    viewMode = if (viewMode == ViewMode.LIST) ViewMode.TIMELINE else ViewMode.LIST
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("回收站 · ${trashNotes.size}") },
+                                onClick = {
+                                    appMenuOpen = false
+                                    trashNotes = noteStore.trash()
+                                    showSettings = false
+                                    trashOpen = true
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("导出文字（MD / CSV）") },
+                                onClick = { appMenuOpen = false; showTextExport = true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("本机文件浏览器") },
+                                onClick = {
+                                    appMenuOpen = false
+                                    exitTextMode()
+                                    showSettings = false
+                                    fileBrowserReturnToSettings = false
+                                    fileBrowserPath = noteStore.filesDir.absolutePath
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("检查更新") },
+                                onClick = {
+                                    appMenuOpen = false
+                                    updateChecking = true
+                                    scope.launch {
+                                        val result = UpdateManager.checkLatest()
+                                        updateChecking = false
+                                        result.onSuccess { info ->
+                                            if (UpdateManager.isNewer(info.version, appVersion)) {
+                                                updateInfo = info
+                                            } else {
+                                                Toast.makeText(context, "已是最新版本（$appVersion）", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }.onFailure { e ->
+                                            Toast.makeText(context, "检查失败：${e.message}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("关于与帮助") },
+                                onClick = { appMenuOpen = false; showAbout = true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("设置") },
+                                onClick = {
+                                    appMenuOpen = false
+                                    apiKeyInput = settingsStore.apiKey
+                                    workspaceInput = settingsStore.workspaceId
+                                    modelInput = settingsStore.model
+                                    dataStats = noteStore.stats()
+                                    exitTextMode()
+                                    exitMultiSelect()
+                                    searchOpen = false
+                                    searchQuery = ""
+                                    showSettings = true
+                                },
+                            )
                         }
                     }
                 },
@@ -1224,6 +1347,7 @@ private fun NoteScreenContent(
                         selected = note.id in selectedIds,
                         onClick = { onBubbleClick(note) },
                         onLongClick = { onBubbleLongClick(note) },
+                        onDoubleClick = { onBubbleDoubleClick(note) },
                         menuOpen = actionNote?.id == note.id,
                         onDismissMenu = { actionNote = null },
                         hidePrivate = hidePrivate,
@@ -1270,6 +1394,7 @@ private fun NoteScreenContent(
                 // 时间轴：按日期分组，顶部日期吸顶，同样支持点空白收键盘
                 TimelineNotes(
                     notes = visibleNotes.asReversed(),
+                    listState = listState,
                     renderNote = renderNote,
                     showHero = !heroPinned,
                     hero = {
@@ -2000,6 +2125,8 @@ private fun NoteScreenContent(
 
     // 2) 提醒：时间选择（拿到日期后再选时分）
     if (showTimePicker) {
+        // DatePicker 的 selectedDateMillis 是 UTC 零点，直接当本地时间会差 8 小时；
+        // 这里按本地时区取出年月日再交给 TimePicker。
         val cal = Calendar.getInstance().apply { timeInMillis = pendingReminderMillis }
         val timeState = rememberTimePickerState(
             initialHour = cal.get(Calendar.HOUR_OF_DAY),
@@ -2019,12 +2146,25 @@ private fun NoteScreenContent(
                         reminderTarget = null
                         showTimePicker = false
                     }) { Text("取消这条提醒", color = Color(0xFFE64340)) }
+                    TextButton(onClick = {
+                        // 10 秒后提醒，便于快速验证闹钟链路
+                        reminderTarget?.let { applyReminder(it, System.currentTimeMillis() + 10_000) }
+                        reminderTarget = null
+                        showTimePicker = false
+                    }) { Text("10 秒后测试") }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val chosen = Calendar.getInstance().apply {
+                    // selectedDateMillis 是 UTC 零点：先用 UTC 日历取出年月日，
+                    // 再用本地日历组装提醒时间，避免跨时区日期错位。
+                    val utcCal = Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply {
                         timeInMillis = pendingReminderMillis
+                    }
+                    val chosen = Calendar.getInstance().apply {
+                        set(Calendar.YEAR, utcCal.get(Calendar.YEAR))
+                        set(Calendar.MONTH, utcCal.get(Calendar.MONTH))
+                        set(Calendar.DAY_OF_MONTH, utcCal.get(Calendar.DAY_OF_MONTH))
                         set(Calendar.HOUR_OF_DAY, timeState.hour)
                         set(Calendar.MINUTE, timeState.minute)
                         set(Calendar.SECOND, 0)
@@ -3237,6 +3377,7 @@ private fun TagChip(text: String, selected: Boolean, dark: Boolean, onClick: () 
 @Composable
 private fun TimelineNotes(
     notes: List<Note>,
+    listState: LazyListState,
     renderNote: @Composable (Note) -> Unit,
     showHero: Boolean,
     hero: @Composable () -> Unit,
@@ -3244,6 +3385,7 @@ private fun TimelineNotes(
 ) {
     val groups = notes.groupBy { dayKey(it.time) }.toList()
     LazyColumn(
+        state = listState,
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(top = 12.dp, bottom = 116.dp),
     ) {
@@ -3368,7 +3510,7 @@ private fun AboutPage(
                     Column(Modifier.padding(14.dp)) {
                         AboutFeature(dark = dark, AppIcons.Mic, "两种输入模式", "底部输入栏左下角按钮切换「可按住转文字」与「按住说话」。点按打字，长按录音。")
                         AboutFeature(dark = dark, AppIcons.Restore, "录音滑动手势", "长按录音时：左滑取消，右滑转文字，原地松手按当前模式保存语音或文字。")
-                        AboutFeature(dark = dark, Icons.Default.Edit, "记录编辑", "点文字记录可复制；长按记录可播放 / 倍速 / 转文字 / 朗读 / 加标签 / 多选 / 删除。")
+                        AboutFeature(dark = dark, Icons.Default.Edit, "记录编辑", "双击文字记录可复制；长按记录可播放 / 倍速 / 转文字 / 朗读 / 加标签 / 多选 / 删除。")
                         AboutFeature(dark = dark, AppIcons.VolumeUp, "文字朗读", "长按文字记录选「朗读」，用系统中文语音读出；与语音播放互斥。")
                         AboutFeature(dark = dark, AppIcons.Label, "标签分类", "长按记录加标签，首页顶部横向标签栏一键筛选。")
                         AboutFeature(dark = dark, AppIcons.Calendar, "日历时间轴", "顶栏日历图标切换按日期分组的时间轴视图。")
