@@ -66,6 +66,7 @@ fun NoteBubble(
     privateRevealed: Boolean = false,
     onRevealPrivate: () -> Unit = {},
     onOpenReminder: () -> Unit = {},
+    onOpenTag: () -> Unit = {},
 ) {
     val cardBg = if (dark) Color(0xFF1B2438) else Color(0xFFFFFFFF)
     val cardBorder = if (dark) Color(0x24FFFFFF) else Color(0x12000000)
@@ -191,7 +192,10 @@ fun NoteBubble(
                     // 标签小胶囊：紧跟正文下方，一眼看出这条属于哪个分类
                     if (note.tags.isNotEmpty()) {
                         Spacer(Modifier.height(6.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable(onClick = onOpenTag),
+                        ) {
                             note.tags.forEach { tag ->
                                 Box(
                                     modifier = Modifier

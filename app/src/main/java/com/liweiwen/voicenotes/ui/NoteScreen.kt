@@ -370,6 +370,8 @@ private fun NoteScreenContent(
     var showTimePicker by remember { mutableStateOf(false) }
     var pendingReminderMillis by remember { mutableStateOf(0L) }
     var summarizingId by remember { mutableStateOf<String?>(null) }
+    // v2.6：摘要结果/失败原因用弹窗明确呈现，不再靠一闪而过的 Toast
+    var summaryDialog by remember { mutableStateOf("") }
     var showTextExport by remember { mutableStateOf(false) }
     var exportDone by remember { mutableStateOf("") }
     var showLockSetup by remember { mutableStateOf(false) }
@@ -765,9 +767,15 @@ private fun NoteScreenContent(
     fun toggleTag(note: Note, tag: String) {
         val trimmed = tag.trim()
         if (trimmed.isBlank()) return
-        val next = if (trimmed in note.tags) note.tags - trimmed else note.tags + trimmed
+        val adding = trimmed !in note.tags
+        val next = if (adding) note.tags + trimmed else note.tags - trimmed
         noteStore.setTags(note.id, next)
         refreshNotes()
+        Toast.makeText(
+            context,
+            if (adding) "已添加标签 #$trimmed" else "已移除标签 #$trimmed",
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 
     /**
@@ -825,29 +833,48 @@ private fun NoteScreenContent(
         }
     }
 
-    /** AI 摘要：把这条记录发给百炼提取要点，写入本机。 */
+    /** 本地摘要：没有有效 API Key 时的兜底，取首句，保证功能永远可用。 */
+    fun localSummary(text: String): String {
+        val clean = text.trim().replace(Regex("\\s+"), " ")
+        if (clean.isBlank() || clean == "[语音消息]") return "这条记录没有可摘要的文字"
+        val firstSentence = clean.split(Regex("[。！？!?\\n]")).firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+        val base = (firstSentence.ifBlank { clean })
+        return if (base.length > 42) base.take(42) + "…" else base
+    }
+
+    /** AI 摘要：有有效 Key 走百炼；没有 / 失败则本地兜底，并用弹窗明确呈现结果。 */
     suspend fun summarizeNote(note: Note) {
-        if (settingsStore.apiKey.isBlank()) {
-            Toast.makeText(context, "请先在设置里填写 API Key", Toast.LENGTH_SHORT).show()
-            return
-        }
         summarizingId = note.id
-        val result = SummaryManager.summarize(
-            apiKey = settingsStore.apiKey,
-            model = settingsStore.summaryModel,
-            text = note.text,
-        )
+        val key = settingsStore.apiKey.trim()
+        // sk-test123 之类的占位 key 直接走本地，不发无效请求
+        val keyLooksReal = key.startsWith("sk-") && key.length > 20
+        var usedLocal = false
+        val result = if (!keyLooksReal) {
+            usedLocal = true
+            SummaryManager.Result.Success(localSummary(note.text))
+        } else {
+            SummaryManager.summarize(apiKey = key, model = settingsStore.summaryModel, text = note.text)
+        }
         summarizingId = null
         when (result) {
             is SummaryManager.Result.Success -> {
                 noteStore.setSummary(note.id, result.text)
                 refreshNotes()
-                Toast.makeText(context, "摘要：${result.text}", Toast.LENGTH_LONG).show()
                 NotesWidgetProvider.refreshAll(context)
+                summaryDialog = if (usedLocal) {
+                    "✦ ${result.text}\n\n（本机摘要：当前未填写有效的百炼 API Key。" +
+                        "想要 AI 提炼要点，可到「设置」里填入真实 Key。）"
+                } else {
+                    "✦ ${result.text}"
+                }
             }
-            is SummaryManager.Result.Failure -> Toast.makeText(
-                context, "摘要失败：${result.message}", Toast.LENGTH_LONG,
-            ).show()
+            is SummaryManager.Result.Failure -> {
+                // 网络/服务失败也降级为本地摘要，保证用户点了就有结果
+                val fallback = localSummary(note.text)
+                noteStore.setSummary(note.id, fallback)
+                refreshNotes()
+                summaryDialog = "AI 摘要失败：${result.message}\n\n已改用本机摘要：\n✦ $fallback"
+            }
         }
     }
 
@@ -1356,6 +1383,11 @@ private fun NoteScreenContent(
                         onOpenReminder = {
                             reminderTarget = note
                             showDatePicker = true
+                        },
+                        onOpenTag = {
+                            actionNote = null
+                            tagTarget = note
+                            tagDraft = ""
                         },
                         menu = {
                             NoteActionMenu(
@@ -2105,6 +2137,16 @@ private fun NoteScreenContent(
     }
 
     // ===== v2.4 对话框组 =====
+    // 0) 摘要结果：明确呈现，避免 Toast 一闪而过看不到
+    if (summaryDialog.isNotBlank()) {
+        AlertDialog(
+            onDismissRequest = { summaryDialog = "" },
+            title = { Text("摘要") },
+            text = { Text(summaryDialog) },
+            confirmButton = { TextButton(onClick = { summaryDialog = "" }) { Text("知道了") } },
+        )
+    }
+
     // 1) 提醒：日期选择
     if (showDatePicker) {
         val dateState = rememberDatePickerState()
@@ -3512,14 +3554,14 @@ private fun AboutPage(
                         AboutFeature(dark = dark, AppIcons.Restore, "录音滑动手势", "长按录音时：左滑取消，右滑转文字，原地松手按当前模式保存语音或文字。")
                         AboutFeature(dark = dark, Icons.Default.Edit, "记录编辑", "双击文字记录可复制；长按记录可播放 / 倍速 / 转文字 / 朗读 / 加标签 / 多选 / 删除。")
                         AboutFeature(dark = dark, AppIcons.VolumeUp, "文字朗读", "长按文字记录选「朗读」，用系统中文语音读出；与语音播放互斥。")
-                        AboutFeature(dark = dark, AppIcons.Label, "标签分类", "长按记录加标签，首页顶部横向标签栏一键筛选。")
+                        AboutFeature(dark = dark, AppIcons.Label, "标签分类", "长按记录加标签，或直接点气泡里的 #标签 修改；首页顶部横向标签栏一键筛选。")
                         AboutFeature(dark = dark, AppIcons.Calendar, "日历时间轴", "顶栏日历图标切换按日期分组的时间轴视图。")
                         AboutFeature(dark = dark, Icons.Default.Delete, "回收站", "删除先进回收站保留 30 天，可在设置里恢复或彻底删除。")
                         AboutFeature(dark = dark, AppIcons.Backup, "备份与恢复", "设置里导出 ZIP（含记录、设置与语音），导入即可整机迁移或恢复。")
                         AboutFeature(dark = dark, Icons.Default.Settings, "主题系统", "浅色 / 深色 / 跟随系统 + 多套配色与自定义色，实时生效。")
                         AboutFeature(dark = dark, Icons.Default.Lock, "本机存储", "录音 WAV 与文字全部保存在本机，仅转写时把音频流式发给阿里云百炼。")
                         AboutFeature(dark = dark, AppIcons.Alarm, "待办提醒", "长按记录选「提醒」，选日期时间，到点弹出通知，点击直达该记录。")
-                        AboutFeature(dark = dark, AppIcons.AutoAwesome, "AI 摘要", "长按文字记录选「摘要」，用百炼把要点压成一句话，显示在气泡里。")
+                        AboutFeature(dark = dark, AppIcons.AutoAwesome, "AI 摘要", "长按文字记录选「摘要」。填了百炼 Key 用 AI 提炼；没填也能本机截取首句做摘要，结果显示在气泡里。")
                         AboutFeature(dark = dark, AppIcons.Backup, "定时备份", "设置里开启每天自动备份，ZIP 存到 下载/随手说/自动备份，全程离线。")
                         AboutFeature(dark = dark, AppIcons.Download, "文字导出", "设置里一键把全部记录导出为 Markdown / CSV，存到 下载/随手说。")
                         AboutFeature(dark = dark, AppIcons.Lock, "隐私锁", "设置密码或指纹，离开再回来需重新解锁；私密记录可打码隐藏。")

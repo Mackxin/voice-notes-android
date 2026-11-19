@@ -16,10 +16,14 @@ import com.liweiwen.voicenotes.R
  * 待办提醒：用 AlarmManager 在指定时间发一条通知。
  * 通过 noteId 区分每条记录的提醒，方便后续取消。
  *
- * v2.5 修复"设了不提醒"：
- * 1) 有精确闹钟权限时用 setExactAndAllowWhileIdle，避免低电耗下被大幅延后；
- * 2) 时间已过直接补发通知，不再静默丢弃；
- * 3) 提供 rescheduleAll，App 启动与开机后重建全部闹钟（系统可能已清除）。
+ * v2.6 修复"设了还是不提醒"：
+ * - v2.5 用 setExact/setAndAllowWhileIdle，在 Android 12+ 没给 SCHEDULE_EXACT_ALARM
+ *   权限时会降级到 setAndAllowWhileIdle——锁屏进入 Doze 后会被系统延后甚至吞掉，
+ *   实测闹钟到期 13 分钟都没触发。
+ * - 改用 setAlarmClock：这是系统给闹钟类应用的专用接口，Doze 下也会准时唤醒，
+ *   且【不需要】精确闹钟权限，是最可靠的一条路。状态栏会出现闹钟图标（符合预期）。
+ * - 系统升级/重启/清后台会清掉闹钟，App 启动与开机时按本机记录全部重建。
+ * - 到点时间已过但闹钟被吞的，启动时补发，不再静默丢弃。
  */
 object ReminderManager {
     const val CHANNEL_ID = "voice_notes_reminder"
@@ -59,31 +63,38 @@ object ReminderManager {
             alarm.cancel(pi)
             return
         }
-        // 已过期：直接补发一条通知，避免用户"设了却不响"
+        // 时间已过：直接补发一条通知，避免"设了却不响"
         if (reminderAt <= System.currentTimeMillis()) {
             ReminderReceiver.showNotification(context, noteId, text)
             return
         }
         runCatching {
-            when {
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && alarm.canScheduleExactAlarms() ->
-                    alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminderAt, pi)
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ->
-                    alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminderAt, pi)
-                else -> alarm.set(AlarmManager.RTC_WAKEUP, reminderAt, pi)
+            // 点击状态栏闹钟图标时打开 App 的意图
+            val showIntent = PendingIntent.getActivity(
+                context,
+                noteId.hashCode() + 7777,
+                Intent(context, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                },
+                pendingFlags(),
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                // setAlarmClock：Doze 下Deliver 精确、无需特殊权限，系统可见的闹钟
+                alarm.setAlarmClock(AlarmManager.AlarmClockInfo(reminderAt, showIntent), pi)
+            } else {
+                alarm.set(AlarmManager.RTC_WAKEUP, reminderAt, pi)
             }
         }
     }
 
     /**
-     * 按本机记录重建所有未到期的提醒。
-     * 系统升级、应用更新、用户清理后台都可能让已注册的闹钟丢失，
-     * 只要记录里还留着 reminderAt，这里就能补回来。
+     * 按本机记录重建所有提醒：未到期的重新注册，已到期但没触发的补发。
+     * 系统升级、应用更新、用户清理后台、重启都可能让已注册的闹钟丢失。
      */
     fun rescheduleAll(context: Context, notes: List<Note>) {
         ensureChannel(context)
         val now = System.currentTimeMillis()
-        notes.filter { !it.isTrashed && it.hasReminder && it.reminderAt > now }
+        notes.filter { !it.isTrashed && it.hasReminder }
             .forEach { schedule(context, it.id, it.text, it.reminderAt) }
     }
 
@@ -92,15 +103,17 @@ object ReminderManager {
         alarm.cancel(pendingIntent(context, noteId, text))
     }
 
+    private fun pendingFlags(): Int =
+        PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+
     private fun pendingIntent(context: Context, noteId: String, text: String): PendingIntent {
         val intent = Intent(context, ReminderReceiver::class.java).apply {
             putExtra(EXTRA_NOTE_ID, noteId)
             putExtra(EXTRA_TEXT, text)
         }
-        val flag = PendingIntent.FLAG_UPDATE_CURRENT or
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
         // requestCode 用 id hashCode，保证一条记录只有一个闹钟
-        return PendingIntent.getBroadcast(context, noteId.hashCode(), intent, flag)
+        return PendingIntent.getBroadcast(context, noteId.hashCode(), intent, pendingFlags())
     }
 }
 
@@ -141,6 +154,13 @@ class ReminderReceiver : BroadcastReceiver() {
                 @Suppress("MissingPermission")
                 (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
                     .notify(noteId.hashCode() + 1000, notification)
+            }
+            // 提醒发出后清掉时间戳：一是气泡上的 ⏰ 徽标消失，二是避免下次启动
+            // rescheduleAll 把这条已过期的提醒再补发一次（一次性提醒语义）。
+            runCatching {
+                if (noteId.isNotBlank()) {
+                    NoteStore(context.applicationContext).setReminder(noteId, 0L)
+                }
             }
         }
     }
