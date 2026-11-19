@@ -104,11 +104,13 @@ class VoiceNotesDocumentsProvider : DocumentsProvider() {
 
     private fun addFileRow(cursor: MatrixCursor, documentId: String, file: File) {
         val isDir = file.isDirectory
+        // 普通文件默认可打开（实现了 openDocument 即可）；目录标记偏好网格视图
+        val flags = if (isDir) DocumentsContract.Document.FLAG_DIR_PREFERS_GRID else 0
         cursor.newRow().apply {
             add(DocumentsContract.Document.COLUMN_DOCUMENT_ID, documentId)
             add(DocumentsContract.Document.COLUMN_DISPLAY_NAME, if (documentId == DOC_NOTES) "notes.json" else file.name)
             add(DocumentsContract.Document.COLUMN_MIME_TYPE, getDocumentType(documentId))
-            add(DocumentsContract.Document.COLUMN_FLAGS, 0)
+            add(DocumentsContract.Document.COLUMN_FLAGS, flags)
             add(DocumentsContract.Document.COLUMN_SIZE, if (isDir) 0L else file.length())
             add(DocumentsContract.Document.COLUMN_LAST_MODIFIED, file.lastModified())
         }

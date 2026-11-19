@@ -121,6 +121,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.liweiwen.voicenotes.asr.AsrResult
@@ -271,6 +273,8 @@ private fun NoteScreenContent(
     // 输入栏默认「可按住转文字」（微信 8.0.80 同款）：不含可聚焦的 EditText，长按不弹键盘。
     // textMode 才是真正打字；inputMode 在「可按住转文字 / 按住说话」之间由左下角按钮切换。
     var textMode by remember { mutableStateOf(false) }
+    // 文字多时进全屏编辑页：草稿非空时点输入栏直接进入，不必挤在单行输入框里改
+    var fullEditorOpen by remember { mutableStateOf(false) }
     var inputMode by remember { mutableStateOf(InputMode.TRANSCRIBE) }
     var status by remember { mutableStateOf("") }
     var recording by remember { mutableStateOf(false) }
@@ -457,40 +461,35 @@ private fun NoteScreenContent(
         selectedIds = emptySet()
     }
 
-    /** 点击设置页的本机路径，直达系统文件应用里的「随手说本机数据」目录。 */
+    /** 点击设置页的本机路径：文件直接打开，目录跳到系统文件应用里对应的位置。 */
     fun openPath(path: String, directory: Boolean) {
         val target = File(path)
         if (!target.exists()) {
             Toast.makeText(context, "文件不存在或已被清理", Toast.LENGTH_SHORT).show()
             return
         }
-        val docId = if (directory) {
-            VoiceNotesDocumentsProvider.DOC_RECORDINGS
-        } else {
-            VoiceNotesDocumentsProvider.DOC_NOTES
-        }
-        val docUri = DocumentsContract.buildDocumentUri(VoiceNotesDocumentsProvider.AUTHORITY, docId)
-        val docIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = if (directory) "*/*" else "text/plain"
-            putExtra(DocumentsContract.EXTRA_INITIAL_URI, docUri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        val opened = runCatching { context.startActivity(docIntent) }.isSuccess
-        if (!opened) {
-            // 兜底：少数设备没有实现 EXTRA_INITIAL_URI，退化为普通文件分享
-            val uri = runCatching {
-                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", target)
-            }.getOrNull() ?: return
-            val fallback = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, if (directory) "resource/folder" else "*/*")
+        val authority = VoiceNotesDocumentsProvider.AUTHORITY
+        val intent = if (directory) {
+            // 目录：用文件选择器列出 recordings 内容（系统不允许把应用私有目录作为可选文件夹）
+            val docUri = DocumentsContract.buildDocumentUri(authority, VoiceNotesDocumentsProvider.DOC_RECORDINGS)
+            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(DocumentsContract.EXTRA_INITIAL_URI, docUri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            runCatching { context.startActivity(fallback) }.onFailure {
-                Toast.makeText(context, "没有可用的文件应用，路径：$path", Toast.LENGTH_LONG).show()
+        } else {
+            // 文件：直接让系统文本查看器打开 notes.json，不再停在文件选择列表
+            val docUri = DocumentsContract.buildDocumentUri(authority, VoiceNotesDocumentsProvider.DOC_NOTES)
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(docUri, "text/plain")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
+        }
+        runCatching { context.startActivity(intent) }.onFailure {
+            Toast.makeText(context, "没有可用的文件应用，路径：$path", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -1245,8 +1244,13 @@ private fun NoteScreenContent(
                                 }
                                 status = ""
                             } else {
-                                // 点文字区：切到打字模式，由 LaunchedEffect 聚焦并弹键盘
-                                textMode = true
+                                // 草稿已有时直接进全屏编辑；空草稿才切到单行打字模式
+                                if (draft.isNotBlank()) {
+                                    keyboardController?.hide()
+                                    fullEditorOpen = true
+                                } else {
+                                    textMode = true
+                                }
                                 status = ""
                             }
                         },
@@ -1334,6 +1338,16 @@ private fun NoteScreenContent(
                                     }
                                 },
                             )
+                            // 全屏编辑：长文字在这里改，不受单行高度限制
+                            IconButton(
+                                onClick = {
+                                    keyboardController?.hide()
+                                    fullEditorOpen = true
+                                },
+                                modifier = Modifier.size(32.dp),
+                            ) {
+                                Icon(Icons.Default.Edit, contentDescription = "全屏编辑", tint = modeAccent, modifier = Modifier.size(18.dp))
+                            }
                             // 收起键盘按钮移到输入区外部独立占位，避免挤压输入文字
                             IconButton(
                                 onClick = { exitTextMode() },
@@ -1409,6 +1423,22 @@ private fun NoteScreenContent(
                 )
             }
 
+        }
+    }
+
+    // 全屏文字编辑：无灰罩、铺满屏幕，多行 TextField 直接改草稿
+    if (fullEditorOpen) {
+        Dialog(
+            onDismissRequest = { fullEditorOpen = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            FullScreenTextEditor(
+                draft = draft,
+                onDraftChange = { draft = it },
+                accent = if (dark) AccentBright else Accent,
+                dark = dark,
+                onDone = { fullEditorOpen = false },
+            )
         }
     }
 
@@ -1975,60 +2005,59 @@ private fun SettingsPage(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
-            // 数据管理
+            // 数据管理：统计 / 路径 / 操作收进同一张卡，不再层层散落
             SettingsSection(title = "数据管理") {
                 CardBox(cardBg) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(14.dp),
-                        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
-                    ) {
-                        StatItem("记录", "${stats.noteCount} 条", textColor)
-                        StatItem("语音", "${stats.audioCount} 个", textColor)
-                        StatItem("占用", formatBytes(stats.audioBytes), textColor)
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("本机数据", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = textColor)
-                    Spacer(Modifier.weight(1f))
-                    TextButton(onClick = onRefresh) { Text("刷新", fontSize = 12.sp) }
-                }
-                // 本机存储路径
-                CardBox(cardBg) {
-                    Column(Modifier.padding(12.dp)) {
-                        PathLine("记录文件", notesFilePath, subColor, textColor) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("本机数据", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = textColor)
+                            Spacer(Modifier.weight(1f))
+                            TextButton(
+                                onClick = onRefresh,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            ) {
+                                Text("刷新", fontSize = 12.sp, color = if (dark) AccentBright else Accent)
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            StatItem("记录", "${stats.noteCount} 条", textColor)
+                            StatItem("语音", "${stats.audioCount} 个", textColor)
+                            StatItem("占用", formatBytes(stats.audioBytes), textColor)
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(if (dark) Color(0x24FFFFFF) else Color(0x14000000)))
+                        Spacer(Modifier.height(2.dp))
+                        DataPathRow(AppIcons.ContentPaste, "记录文件", "notes.json", textColor, subColor, dark) {
                             onOpenPath(notesFilePath, false)
                         }
-                        Spacer(Modifier.height(6.dp))
-                        PathLine("语音目录", recordingsDirPath, subColor, textColor) {
+                        DataPathRow(AppIcons.FolderOpen, "语音目录", "${stats.audioCount} 个 WAV", textColor, subColor, dark) {
                             onOpenPath(recordingsDirPath, true)
+                        }
+                        Spacer(Modifier.height(2.dp))
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(if (dark) Color(0x24FFFFFF) else Color(0x14000000)))
+                        Spacer(Modifier.height(6.dp))
+                        Row(Modifier.fillMaxWidth()) {
+                            TextButton(onClick = onOpenTrash, modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) {
+                                Text(if (trashCount > 0) "回收站 ($trashCount)" else "回收站", fontSize = 12.sp, color = if (dark) AccentBright else Accent)
+                            }
+                            TextButton(onClick = onExport, modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) {
+                                Text("导出备份", fontSize = 12.sp, color = if (dark) AccentBright else Accent)
+                            }
+                            TextButton(onClick = onImport, modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) {
+                                Text("导入恢复", fontSize = 12.sp, color = if (dark) AccentBright else Accent)
+                            }
                         }
                     }
                 }
-                Spacer(Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                ) {
-                    TextButton(onClick = onOpenTrash) {
-                        Text(
-                            if (trashCount > 0) "回收站 ($trashCount)" else "回收站",
-                            color = if (dark) AccentBright else Accent,
-                        )
+                Spacer(Modifier.height(2.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    TextButton(onClick = onClearAudio, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                        Text("清除语音文件（保留文字）", fontSize = 12.sp, color = if (dark) Color(0xFFE8B04B) else Color(0xFFB8860B))
                     }
-                    TextButton(onClick = onExport) {
-                        Text("导出备份", color = if (dark) AccentBright else Accent)
+                    TextButton(onClick = onClearAll, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                        Text("清空全部数据", fontSize = 12.sp, color = Color(0xFFE64340))
                     }
-                    TextButton(onClick = onImport) {
-                        Text("导入恢复", color = if (dark) AccentBright else Accent)
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                TextButton(onClick = onClearAudio) {
-                    Text("清除语音文件（保留文字）", color = if (dark) Color(0xFFE8B04B) else Color(0xFFB8860B))
-                }
-                TextButton(onClick = onClearAll) {
-                    Text("清空全部数据", color = Color(0xFFE64340))
                 }
             }
 
@@ -2318,27 +2347,85 @@ private fun StatItem(label: String, value: String, color: Color) {
     }
 }
 
+/** 设置页路径行：图标 + 名称 + 简短说明 + 右箭头，点击直达系统文件应用。 */
 @Composable
-private fun PathLine(
+private fun DataPathRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
-    path: String,
-    subColor: Color,
+    detail: String,
     textColor: Color,
+    subColor: Color,
+    dark: Boolean,
     onClick: () -> Unit,
 ) {
+    val accent = if (dark) AccentBright else Accent
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
-            .padding(vertical = 4.dp),
+            .padding(vertical = 9.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(label, fontSize = 11.sp, color = subColor)
-            Text(path, fontSize = 10.sp, color = textColor)
+        Box(
+            modifier = Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)).background(accent.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(18.dp))
         }
-        Icon(AppIcons.FolderOpen, contentDescription = "打开目录", tint = Accent, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(label, fontSize = 13.sp, color = textColor)
+            Text(detail, fontSize = 11.sp, color = subColor)
+        }
+        Text("›", fontSize = 22.sp, color = subColor)
+    }
+}
+
+/** 全屏文字编辑器：多行输入、自动聚焦、字数提示；返回与完成只关页面，草稿保留。 */
+@Composable
+private fun FullScreenTextEditor(
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    accent: Color,
+    dark: Boolean,
+    onDone: () -> Unit,
+) {
+    val bg = if (dark) Color(0xFF0B1020) else Color(0xFFF7F9FB)
+    val textColor = if (dark) Color(0xFFEAF6F3) else Color(0xFF19322E)
+    val subColor = if (dark) Color(0xFF9FB3B0) else Color(0xFF8A9996)
+    val focusRequester = remember { FocusRequester() }
+    BackHandler(onBack = onDone)
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    Column(Modifier.fillMaxSize().background(bg)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onDone) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = textColor)
+            }
+            Text("编辑文字", Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, color = textColor)
+            TextButton(onClick = onDone) { Text("完成", color = accent, fontSize = 14.sp) }
+        }
+        BasicTextField(
+            value = draft,
+            onValueChange = onDraftChange,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .focusRequester(focusRequester),
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, lineHeight = 26.sp, color = textColor),
+            cursorBrush = SolidColor(accent),
+            decorationBox = { inner ->
+                Box(Modifier.fillMaxSize()) {
+                    if (draft.isEmpty()) Text("输入文字…", fontSize = 16.sp, color = subColor)
+                    inner()
+                }
+            },
+        )
+        Text("共 ${draft.length} 字", modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp), fontSize = 12.sp, color = subColor)
     }
 }
 

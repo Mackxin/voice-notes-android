@@ -72,6 +72,8 @@ fun NoteBubble(
     val voiceOnly = note.hasAudio && (note.text == "[语音消息]" || note.text.isBlank())
     // 有真实文字的记录（含已转成文字的语音）：只显示文字，不再显示波形 + 时长
     val showWave = note.hasAudio && voiceOnly
+    // 纯语音保留胶囊；文字记录改圆角矩形，长文本不会被椭圆裁掉边角
+    val bubbleShape = if (voiceOnly) RoundedCornerShape(50) else RoundedCornerShape(18.dp)
     val bubbleBorder by animateColorAsState(
         targetValue = if (multiSelect && selected) accent else if (isPlaying) accent.copy(alpha = 0.7f) else cardBorder,
         animationSpec = tween(180),
@@ -118,9 +120,9 @@ fun NoteBubble(
                 Column(
                     modifier = Modifier
                         .widthIn(max = 290.dp)
-                        .clip(RoundedCornerShape(50))
+                        .clip(bubbleShape)
                         .background(cardBg)
-                        .border(1.dp, bubbleBorder, RoundedCornerShape(50))
+                        .border(1.dp, bubbleBorder, bubbleShape)
                         .combinedClickable(onClick = onClick, onLongClick = onLongClick)
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                 ) {
