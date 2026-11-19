@@ -2,10 +2,14 @@ package com.liweiwen.voicenotes.ui
 
 import android.Manifest
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Environment
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -70,6 +74,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -275,6 +280,9 @@ private fun NoteScreenContent(
     var textMode by remember { mutableStateOf(false) }
     // 文字多时进全屏编辑页：草稿非空时点输入栏直接进入，不必挤在单行输入框里改
     var fullEditorOpen by remember { mutableStateOf(false) }
+    // 本机文件浏览器：null 关闭；值为「记录文件」或「语音目录」的完整路径
+    var fileBrowserPath by remember { mutableStateOf<String?>(null) }
+    var fileBrowserReturnToSettings by remember { mutableStateOf(false) }
     var inputMode by remember { mutableStateOf(InputMode.TRANSCRIBE) }
     var status by remember { mutableStateOf("") }
     var recording by remember { mutableStateOf(false) }
@@ -433,6 +441,20 @@ private fun NoteScreenContent(
         }
     }
 
+    // Android 9 及以下导出单个文件：系统另存为
+    var pendingExportFile by remember { mutableStateOf<File?>(null) }
+    val saveAsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("*/*"),
+    ) { uri ->
+        val file = pendingExportFile
+        if (uri != null && file != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { out -> file.inputStream().use { it.copyTo(out) } }
+            }.onSuccess { Toast.makeText(context, "已保存到你选择的位置", Toast.LENGTH_LONG).show() }
+        }
+        pendingExportFile = null
+    }
+
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
@@ -461,35 +483,66 @@ private fun NoteScreenContent(
         selectedIds = emptySet()
     }
 
-    /** 点击设置页的本机路径：文件直接打开，目录跳到系统文件应用里对应的位置。 */
+    /** 点击设置页的本机路径：进 App 内文件浏览器，直接看到完整路径和文件，不再跳系统选择器。 */
     fun openPath(path: String, directory: Boolean) {
-        val target = File(path)
-        if (!target.exists()) {
+        if (!File(path).exists()) {
             Toast.makeText(context, "文件不存在或已被清理", Toast.LENGTH_SHORT).show()
             return
         }
-        val authority = VoiceNotesDocumentsProvider.AUTHORITY
-        val intent = if (directory) {
-            // 目录：用文件选择器列出 recordings 内容（系统不允许把应用私有目录作为可选文件夹）
-            val docUri = DocumentsContract.buildDocumentUri(authority, VoiceNotesDocumentsProvider.DOC_RECORDINGS)
-            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = "*/*"
-                putExtra(DocumentsContract.EXTRA_INITIAL_URI, docUri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // 设置页在组合树的后面，会盖住浏览器；先关掉，返回时再恢复
+        fileBrowserReturnToSettings = showSettings
+        showSettings = false
+        fileBrowserPath = path
+    }
+
+    fun closeFileBrowser() {
+        fileBrowserPath = null
+        if (fileBrowserReturnToSettings) showSettings = true
+        fileBrowserReturnToSettings = false
+    }
+
+    /** 导出单个文件到「下载/随手说」，让用户能在系统文件管理器里找到。 */
+    fun exportFile(file: File) {
+        val mime = if (file.name.endsWith(".wav", true)) "audio/wav" else "application/json"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, file.name)
+                put(MediaStore.Downloads.MIME_TYPE, mime)
+                put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/随手说")
+            }
+            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            if (uri == null) {
+                Toast.makeText(context, "导出失败：无法写入下载目录", Toast.LENGTH_LONG).show()
+                return
+            }
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    file.inputStream().use { it.copyTo(out) }
+                }
+            }.onSuccess {
+                Toast.makeText(context, "已导出到 下载/随手说/${file.name}", Toast.LENGTH_LONG).show()
+            }.onFailure {
+                Toast.makeText(context, "导出失败：${it.message}", Toast.LENGTH_LONG).show()
             }
         } else {
-            // 文件：直接让系统文本查看器打开 notes.json，不再停在文件选择列表
-            val docUri = DocumentsContract.buildDocumentUri(authority, VoiceNotesDocumentsProvider.DOC_NOTES)
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(docUri, "text/plain")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
+            // Android 9 及以下无 MediaStore.Downloads，走系统另存为
+            pendingExportFile = file
+            saveAsLauncher.launch(file.name)
         }
-        runCatching { context.startActivity(intent) }.onFailure {
-            Toast.makeText(context, "没有可用的文件应用，路径：$path", Toast.LENGTH_LONG).show()
+    }
+
+    fun shareFile(file: File) {
+        val uri = runCatching {
+            androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        }.getOrNull() ?: return
+        val mime = if (file.name.endsWith(".wav", true)) "audio/wav" else "application/json"
+        val send = Intent(Intent.ACTION_SEND).apply {
+            setDataAndType(uri, mime)
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching { context.startActivity(Intent.createChooser(send, "分享文件")) }.onFailure {
+            Toast.makeText(context, "没有可用的分享应用", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -506,25 +559,28 @@ private fun NoteScreenContent(
     }
 
     // 返回键优先级：关于 > 回收站 > 设置页 > 多选 > 搜索 > 打字模式 >（不拦截，交给系统退出）
-    BackHandler(enabled = showAbout) {
+    BackHandler(enabled = fileBrowserPath != null) {
+        closeFileBrowser()
+    }
+    BackHandler(enabled = fileBrowserPath == null && showAbout) {
         showAbout = false
     }
-    BackHandler(enabled = !showAbout && trashOpen) {
+    BackHandler(enabled = fileBrowserPath == null && !showAbout && trashOpen) {
         trashOpen = false
         refreshData()
     }
-    BackHandler(enabled = !showAbout && !trashOpen && showSettings) {
+    BackHandler(enabled = fileBrowserPath == null && !showAbout && !trashOpen && showSettings) {
         showSettings = false
         refreshData()
     }
-    BackHandler(enabled = !showAbout && !trashOpen && !showSettings && multiSelect) {
+    BackHandler(enabled = fileBrowserPath == null && !showAbout && !trashOpen && !showSettings && multiSelect) {
         exitMultiSelect()
     }
-    BackHandler(enabled = !showAbout && !trashOpen && !showSettings && !multiSelect && searchOpen) {
+    BackHandler(enabled = fileBrowserPath == null && !showAbout && !trashOpen && !showSettings && !multiSelect && searchOpen) {
         searchOpen = false
         searchQuery = ""
     }
-    BackHandler(enabled = !showAbout && !trashOpen && !showSettings && !multiSelect && !searchOpen && textMode) {
+    BackHandler(enabled = fileBrowserPath == null && !showAbout && !trashOpen && !showSettings && !multiSelect && !searchOpen && textMode) {
         exitTextMode()
     }
 
@@ -1442,6 +1498,18 @@ private fun NoteScreenContent(
         }
     }
 
+    // 本机文件浏览器：显示完整路径与文件列表，可导出到「下载/随手说」
+    fileBrowserPath?.let { path ->
+        FileBrowserPage(
+            path = path,
+            dark = dark,
+            onBack = { closeFileBrowser() },
+            onExport = { exportFile(it) },
+            onExportAll = { files -> files.forEach { exportFile(it) } },
+            onShare = { shareFile(it) },
+        )
+    }
+
     // 回收站全屏页
     if (trashOpen) {
         TrashPage(
@@ -2028,10 +2096,10 @@ private fun SettingsPage(
                         Spacer(Modifier.height(12.dp))
                         Box(Modifier.fillMaxWidth().height(1.dp).background(if (dark) Color(0x24FFFFFF) else Color(0x14000000)))
                         Spacer(Modifier.height(2.dp))
-                        DataPathRow(AppIcons.ContentPaste, "记录文件", "notes.json", textColor, subColor, dark) {
+                        DataPathRow(AppIcons.ContentPaste, "记录文件", "notes.json · 查看路径并导出", textColor, subColor, dark) {
                             onOpenPath(notesFilePath, false)
                         }
-                        DataPathRow(AppIcons.FolderOpen, "语音目录", "${stats.audioCount} 个 WAV", textColor, subColor, dark) {
+                        DataPathRow(AppIcons.FolderOpen, "语音目录", "${stats.audioCount} 个 WAV · 查看路径并导出", textColor, subColor, dark) {
                             onOpenPath(recordingsDirPath, true)
                         }
                         Spacer(Modifier.height(2.dp))
@@ -2426,6 +2494,125 @@ private fun FullScreenTextEditor(
             },
         )
         Text("共 ${draft.length} 字", modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp), fontSize = 12.sp, color = subColor)
+    }
+}
+
+/** App 内本机文件浏览器：直接显示完整路径与文件，可导出到「下载/随手说」。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FileBrowserPage(
+    path: String,
+    dark: Boolean,
+    onBack: () -> Unit,
+    onExport: (File) -> Unit,
+    onExportAll: (List<File>) -> Unit,
+    onShare: (File) -> Unit,
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val surface = if (dark) SurfaceDark else SurfaceLight
+    val background = if (dark) BgDark else BgLight
+    val textColor = if (dark) Color(0xFFECECEC) else Color(0xFF222222)
+    val subColor = if (dark) Color(0xFF8A8A8A) else Color(0xFF999999)
+    val cardBg = if (dark) InputDark else Color.White
+    val accent = if (dark) AccentBright else Accent
+    val target = File(path)
+    val isDir = target.isDirectory
+    val files = remember(path) {
+        if (isDir) {
+            target.listFiles()?.filter { it.isFile }?.sortedByDescending { it.lastModified() } ?: emptyList()
+        } else listOf(target)
+    }
+    Scaffold(
+        containerColor = background,
+        topBar = {
+            TopAppBar(
+                title = { Text(if (isDir) "语音目录" else "记录文件", fontSize = 18.sp, fontWeight = FontWeight.Medium) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = textColor)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = surface, titleContentColor = textColor),
+            )
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+        ) {
+            CardBox(cardBg) {
+                Column(Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("完整路径", fontSize = 12.sp, color = subColor, modifier = Modifier.weight(1f))
+                        TextButton(
+                            onClick = {
+                                clipboard.setText(AnnotatedString(path))
+                                Toast.makeText(context, "路径已复制", Toast.LENGTH_SHORT).show()
+                            },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        ) {
+                            Text("复制", fontSize = 12.sp, color = accent)
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(path, fontSize = 12.sp, color = textColor)
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "这些文件在 App 私有目录，系统文件管理器无法直接打开。点「导出」复制到「下载 / 随手说」，即可在系统文件管理器里找到。",
+                fontSize = 12.sp,
+                color = subColor,
+            )
+            Spacer(Modifier.height(12.dp))
+            Text("文件（${files.size}）", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = textColor)
+            Spacer(Modifier.height(8.dp))
+            if (files.isEmpty()) {
+                Text("这里还没有文件", fontSize = 13.sp, color = subColor)
+            } else {
+                files.forEach { file ->
+                    CardBox(cardBg) {
+                        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                if (file.name.endsWith(".wav", true)) AppIcons.VolumeUp else AppIcons.ContentPaste,
+                                contentDescription = null,
+                                tint = accent,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(file.name, fontSize = 13.sp, color = textColor)
+                                Text(
+                                    "${formatBytes(file.length())} · ${formatRecordTime(file.lastModified())}",
+                                    fontSize = 11.sp,
+                                    color = subColor,
+                                )
+                            }
+                            IconButton(onClick = { onShare(file) }, modifier = Modifier.size(36.dp)) {
+                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "分享", tint = accent, modifier = Modifier.size(18.dp))
+                            }
+                            IconButton(onClick = { onExport(file) }, modifier = Modifier.size(36.dp)) {
+                                Icon(AppIcons.Backup, contentDescription = "导出", tint = accent, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
+                Spacer(Modifier.height(6.dp))
+                Button(
+                    onClick = { onExportAll(files) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = accent),
+                ) {
+                    Text("导出全部到 下载/随手说", color = Color.White, fontSize = 14.sp)
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
     }
 }
 

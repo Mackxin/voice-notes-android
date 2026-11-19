@@ -1,6 +1,8 @@
 # 随手说 · VoiceNotes
 
-一个「微信式」语音速记安卓 App（v2.2.0）：**底部输入栏有两种模式——「可按住转文字」和「按住说话」，点左下角按钮即可来回切换，切换带滑动淡入与配色渐变过渡**（对齐微信 8.0.80 的「可按住 转文字」交互）。录音与文字全部保存在本机，语音识别走阿里云百炼 DashScope；声纹光球录音动效、卡片式记录、首页概览、剪贴板快贴一应俱全。
+一个「微信式」语音速记安卓 App（v2.3.0）：**底部输入栏有两种模式——「可按住转文字」和「按住说话」，点左下角按钮即可来回切换，切换带滑动淡入与配色渐变过渡**（对齐微信 8.0.80 的「可按住 转文字」交互）。录音与文字全部保存在本机，语音识别走阿里云百炼 DashScope；声纹光球录音动效、卡片式记录、首页概览、剪贴板快贴一应俱全。
+
+v2.3.0 重点（本机文件看得见）：**App 内文件浏览器**（点「记录文件」「语音目录」不再跳系统选择器，而是直接在 App 内显示完整路径、文件列表、大小与修改时间，路径可一键复制）、**一键导出到手机**（每个文件可分享，或导出到「下载 / 随手说」，之后在系统文件管理器里就能直接找到）、**说明私有目录限制**（页面内明确告知 App 私有目录无法被系统文件管理器直接访问，导出即可解决）。
 
 v2.2.0 重点（文字编辑 + 数据卡片）：**文字记录气泡改圆角矩形**（长文本不再被椭圆裁掉边角，纯语音仍保留胶囊）、**输入栏支持全屏编辑**（草稿非空时点输入栏直接进入多行全屏编辑页，也可点输入框右侧编辑按钮；自动聚焦、字数提示、完成后草稿保留）、**本机数据卡片重设计**（统计 / 路径 / 操作收进同一张卡，路径行改图标 + 简短说明，不再显示冗长的 /data/user/0/... 路径）、**文件跳转修复**（点「记录文件」直接拉起系统查看器打开 notes.json；点「语音目录」打开系统文件选择器并显示「随手说本机数据」入口——Android 不允许第三方 App 把私有目录直接设为文件选择器的当前目录）。
 
@@ -175,7 +177,7 @@ app/src/main/java/com/liweiwen/voicenotes/
 
 ## 下载与更新
 
-- **最新版本**：v2.2.0 — [GitHub Release](https://github.com/Mackxin/voice-notes-android/releases/tag/v2.2.0)；APK 直链：[voice-notes-v2.2.0-release.apk](https://github.com/Mackxin/voice-notes-android/releases/download/v2.2.0/voice-notes-v2.2.0-release.apk)。
+- **最新版本**：v2.3.0 — [GitHub Release](https://github.com/Mackxin/voice-notes-android/releases/tag/v2.3.0)；APK 直链：[voice-notes-v2.3.0-release.apk](https://github.com/Mackxin/voice-notes-android/releases/download/v2.3.0/voice-notes-v2.3.0-release.apk)。
 - **App 内更新**：设置 →「关于与更新」→「检查更新」。应用读取 GitHub Releases 最新版；仓库发布带 APK 的新 Release 后，此处即可下载并跳转系统安装界面。
 - **安装权限**：首次安装或覆盖安装需系统允许「未知来源」。
 
