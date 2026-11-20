@@ -48,6 +48,15 @@
             android:name=".data.ReminderReceiver"
             android:exported="false" />
 
+        <!-- v2.7：深色模式定时切换 -->
+        <receiver
+            android:name=".data.ThemeScheduleReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.liweiwen.voicenotes.THEME_SCHEDULE" />
+            </intent-filter>
+        </receiver>
+
         <!-- 开机重建提醒闹钟 -->
         <receiver
             android:name=".data.BootReceiver"

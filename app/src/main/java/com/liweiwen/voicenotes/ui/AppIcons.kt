@@ -30,6 +30,12 @@ object AppIcons {
     val LocationOn: ImageVector by lazy { build("LocationOn", LOCATION_ON_PATH) }
     val Headset: ImageVector by lazy { build("Headset", HEADSET_PATH) }
     val GridView: ImageVector by lazy { build("GridView", GRID_VIEW_PATH) }
+    val PushPin: ImageVector by lazy { build("PushPin", PUSH_PIN_PATH) }
+    val CheckCircle: ImageVector by lazy { build("CheckCircle", CHECK_CIRCLE_PATH) }
+    val Image: ImageVector by lazy { build("Image", IMAGE_PATH) }
+    val Schedule: ImageVector by lazy { build("Schedule", SCHEDULE_PATH) }
+    val Chart: ImageVector by lazy { build("Chart", CHART_PATH) }
+    val Phrase: ImageVector by lazy { build("Phrase", PHRASE_PATH) }
 
     private fun build(name: String, pathData: String): ImageVector {
         val nodes = PathParser().parsePathString(pathData).toNodes()
@@ -83,3 +89,15 @@ private const val HEADSET_PATH =
     "M12 1c-4.97 0-9 4.03-9 9v7c0 1.66 1.34 3 3 3h3v-8H5v-2c0-3.87 3.13-7 7-7s7 3.13 7 7v2h-4v8h3c1.66 0 3-1.34 3-3v-7c0-4.97-4.03-9-9-9z"
 private const val GRID_VIEW_PATH =
     "M3 3v8h8V3H3zm6 6H5V5h4v4zm-6 7v8h8v-8H3zm6 6H5v-4h4v4zm7-20v8h8V3h-8zm6 6h-4V5h4v4zm-6 7v8h8v-8h-8zm6 6h-4v-4h4v4z"
+private const val PUSH_PIN_PATH =
+    "M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.9L11 21l1 .5 2.6-6.5H21v-2c-1.66 0-3-1.34-3-3z"
+private const val CHECK_CIRCLE_PATH =
+    "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"
+private const val IMAGE_PATH =
+    "M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"
+private const val SCHEDULE_PATH =
+    "M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"
+private const val CHART_PATH =
+    "M5 9.2h3V19H5V9.2zM10.6 5h2.8v14h-2.8V5zm5.6 6H19v8h-2.8v-8zm5.6-5h2.8v13h-2.8V6z"
+private const val PHRASE_PATH =
+    "M4 5h16v2H4V5zm0 4h10v2H4V9zm0 4h16v2H4v-2zm0 4h10v2H4v-2z"

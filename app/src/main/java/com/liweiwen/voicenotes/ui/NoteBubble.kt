@@ -67,6 +67,7 @@ fun NoteBubble(
     onRevealPrivate: () -> Unit = {},
     onOpenReminder: () -> Unit = {},
     onOpenTag: () -> Unit = {},
+    onToggleDone: () -> Unit = {},
 ) {
     val cardBg = if (dark) Color(0xFF1B2438) else Color(0xFFFFFFFF)
     val cardBorder = if (dark) Color(0x24FFFFFF) else Color(0x12000000)
@@ -121,8 +122,41 @@ fun NoteBubble(
             Spacer(Modifier.width(8.dp))
         }
         Column(horizontalAlignment = Alignment.Start) {
-            // 只保留时间；语音时长已在气泡内显示，不再重复标注"语音 X:XX"
-            Text(formatTime(note.time), fontSize = 10.sp, color = subText, modifier = Modifier.padding(start = 6.dp, bottom = 4.dp))
+            // 时间行：置顶标 + 待办勾选框 + 时间。多选用最左侧勾选框，二者不冲突。
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 4.dp)) {
+                if (note.isPinned) {
+                    Text("📌", fontSize = 10.sp, modifier = Modifier.padding(start = 2.dp))
+                    Spacer(Modifier.width(3.dp))
+                }
+                if (note.isDone) {
+                    // 待办完成：点勾选框可取消完成
+                    Box(
+                        modifier = Modifier
+                            .padding(start = 2.dp)
+                            .size(16.dp)
+                            .clip(CircleShape)
+                            .background(accent)
+                            .clickable(onClick = onToggleDone),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Default.Check, contentDescription = "取消完成", tint = if (dark) Color(0xFF0B1020) else Color.White, modifier = Modifier.size(11.dp))
+                    }
+                } else {
+                    // 待办未完成标记只在有提醒的记录上显示勾选圈，避免普通记录误点
+                    if (note.hasReminder) {
+                        Box(
+                            modifier = Modifier
+                                .padding(start = 2.dp)
+                                .size(16.dp)
+                                .clip(CircleShape)
+                                .border(1.5.dp, subText, CircleShape)
+                                .clickable(onClick = onToggleDone),
+                            contentAlignment = Alignment.Center,
+                        ) {}
+                    }
+                }
+                Text(formatTime(note.time), fontSize = 10.sp, color = subText, modifier = Modifier.padding(start = 4.dp))
+            }
             Box {
                 Column(
                     modifier = Modifier

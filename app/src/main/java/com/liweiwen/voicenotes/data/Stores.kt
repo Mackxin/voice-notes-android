@@ -28,6 +28,9 @@ data class Note(
     val latitude: Double = 0.0,     // 地理标记纬度
     val longitude: Double = 0.0,    // 地理标记经度
     val placeName: String = "",     // 位置名称（经纬度或反查地址）
+    // ===== v2.7 新增字段（同样带默认值，旧数据与备份无缝兼容） =====
+    val isPinned: Boolean = false,  // 置顶记录
+    val isDone: Boolean = false,    // 待办完成标记
 ) {
     val hasAudio: Boolean get() = !audioPath.isNullOrBlank()
     val isTrashed: Boolean get() = deletedAt > 0L
@@ -77,7 +80,7 @@ class NoteStore(context: Context) {
         purgeExpiredTrash()
     }
 
-    /** 正常记录（不含回收站）。 */
+    /** 正常记录（不含回收站），按写入顺序。界面根据 isPinned 决定置顶展示。 */
     fun all(): List<Note> = notes.filter { !it.isTrashed }
 
     /** 全部记录（含回收站），备份导出用。 */
@@ -154,6 +157,31 @@ class NoteStore(context: Context) {
         val index = notes.indexOfFirst { it.id == id }
         if (index < 0) return
         notes[index] = notes[index].copy(latitude = latitude, longitude = longitude, placeName = placeName)
+        save()
+    }
+
+    /** 切换置顶。 */
+    fun setPinned(id: String, value: Boolean) {
+        val index = notes.indexOfFirst { it.id == id }
+        if (index < 0) return
+        notes[index] = notes[index].copy(isPinned = value)
+        save()
+    }
+
+    /** 切换待办完成。 */
+    fun setDone(id: String, value: Boolean) {
+        val index = notes.indexOfFirst { it.id == id }
+        if (index < 0) return
+        notes[index] = notes[index].copy(isDone = value)
+        save()
+    }
+
+    /** 合并 AI 自动打出的标签（去重，不删除已有标签）。 */
+    fun addTags(id: String, more: List<String>) {
+        val index = notes.indexOfFirst { it.id == id }
+        if (index < 0) return
+        val merged = (notes[index].tags + more).distinct().filter { it.isNotBlank() }
+        notes[index] = notes[index].copy(tags = merged)
         save()
     }
 
@@ -309,6 +337,8 @@ class NoteStore(context: Context) {
                     latitude = obj.optDouble("latitude", 0.0),
                     longitude = obj.optDouble("longitude", 0.0),
                     placeName = obj.optString("placeName"),
+                    isPinned = obj.optBoolean("isPinned"),
+                    isDone = obj.optBoolean("isDone"),
                 )
                 // 老数据顺手修正一次时长（旧版把秒当成毫秒写进 JSON）
                 notes.add(
@@ -342,7 +372,9 @@ class NoteStore(context: Context) {
                     .put("isPrivate", note.isPrivate)
                     .put("latitude", note.latitude)
                     .put("longitude", note.longitude)
-                    .put("placeName", note.placeName),
+                    .put("placeName", note.placeName)
+                    .put("isPinned", note.isPinned)
+                    .put("isDone", note.isDone),
             )
         }
         file.writeText(array.toString())
@@ -448,6 +480,32 @@ class SettingsStore(context: Context) {
     var hidePrivate: Boolean
         get() = prefs.getBoolean("hide_private", true)
         set(value) { prefs.edit().putBoolean("hide_private", value).apply() }
+
+    // ===== v2.7 新增设置 =====
+    /** 常用短语，多个用换行分隔，输入栏一键插入。 */
+    var quickPhrases: String
+        get() = prefs.getString("quick_phrases", "").orEmpty()
+        set(value) { prefs.edit().putString("quick_phrases", value).apply() }
+
+    /** 深色模式定时切换开关。 */
+    var themeScheduleEnabled: Boolean
+        get() = prefs.getBoolean("theme_schedule_enabled", false)
+        set(value) { prefs.edit().putBoolean("theme_schedule_enabled", value).apply() }
+
+    /** 定时切到深色的小时（0-23）。 */
+    var themeDarkHour: Int
+        get() = prefs.getInt("theme_dark_hour", 19)
+        set(value) { prefs.edit().putInt("theme_dark_hour", value).apply() }
+
+    /** 定时切回浅色的小时（0-23）。 */
+    var themeLightHour: Int
+        get() = prefs.getInt("theme_light_hour", 7)
+        set(value) { prefs.edit().putInt("theme_light_hour", value).apply() }
+
+    /** AI 摘要时顺带自动打标签开关。 */
+    var autoTagEnabled: Boolean
+        get() = prefs.getBoolean("auto_tag_enabled", true)
+        set(value) { prefs.edit().putBoolean("auto_tag_enabled", value).apply() }
 
     companion object {
         const val DEFAULT_MODEL = "paraformer-realtime-v2"

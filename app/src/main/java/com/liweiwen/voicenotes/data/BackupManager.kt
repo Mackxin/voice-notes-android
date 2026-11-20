@@ -114,6 +114,8 @@ object BackupManager {
                         latitude = obj.optDouble("latitude", 0.0),
                         longitude = obj.optDouble("longitude", 0.0),
                         placeName = obj.optString("placeName"),
+                        isPinned = obj.optBoolean("isPinned"),
+                        isDone = obj.optBoolean("isDone"),
                     ),
                 )
             }
@@ -136,6 +138,11 @@ object BackupManager {
                 settingsStore.locationEnabled = s.optBoolean("location_enabled", settingsStore.locationEnabled)
                 settingsStore.lockEnabled = s.optBoolean("lock_enabled", settingsStore.lockEnabled)
                 settingsStore.hidePrivate = s.optBoolean("hide_private", settingsStore.hidePrivate)
+                settingsStore.quickPhrases = s.optString("quick_phrases", settingsStore.quickPhrases)
+                settingsStore.themeScheduleEnabled = s.optBoolean("theme_schedule_enabled", settingsStore.themeScheduleEnabled)
+                settingsStore.themeDarkHour = s.optInt("theme_dark_hour", settingsStore.themeDarkHour)
+                settingsStore.themeLightHour = s.optInt("theme_light_hour", settingsStore.themeLightHour)
+                settingsStore.autoTagEnabled = s.optBoolean("auto_tag_enabled", settingsStore.autoTagEnabled)
                 settingsRestored = true
             }
             return BackupResult(added, audioCount, settingsRestored)
@@ -165,7 +172,9 @@ object BackupManager {
                     .put("isPrivate", note.isPrivate)
                     .put("latitude", note.latitude)
                     .put("longitude", note.longitude)
-                    .put("placeName", note.placeName),
+                    .put("placeName", note.placeName)
+                    .put("isPinned", note.isPinned)
+                    .put("isDone", note.isDone),
             )
         }
         return root.toString()
@@ -185,4 +194,9 @@ object BackupManager {
         .put("location_enabled", s.locationEnabled)
         .put("lock_enabled", s.lockEnabled)
         .put("hide_private", s.hidePrivate)
+        .put("quick_phrases", s.quickPhrases)
+        .put("theme_schedule_enabled", s.themeScheduleEnabled)
+        .put("theme_dark_hour", s.themeDarkHour)
+        .put("theme_light_hour", s.themeLightHour)
+        .put("auto_tag_enabled", s.autoTagEnabled)
 }

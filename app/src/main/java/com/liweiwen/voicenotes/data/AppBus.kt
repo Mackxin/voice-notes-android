@@ -19,4 +19,5 @@ object AppBus {
     const val TOGGLE_RECORD = "toggle_record"
     const val START_RECORD = "start_record"
     const val STOP_RECORD = "stop_record"
+    const val THEME_REFRESH = "theme_refresh"
 }

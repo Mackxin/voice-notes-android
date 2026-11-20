@@ -13,8 +13,8 @@ android {
         applicationId = "com.liweiwen.voicenotes"
         minSdk = 26
         targetSdk = 34
-        versionCode = 22
-        versionName = "2.6.0"
+        versionCode = 23
+        versionName = "2.7.0"
     }
 
     buildTypes {

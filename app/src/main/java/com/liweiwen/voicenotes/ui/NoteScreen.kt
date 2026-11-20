@@ -117,6 +117,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -160,6 +161,9 @@ import com.liweiwen.voicenotes.data.ExportManager
 import com.liweiwen.voicenotes.data.LocationHelper
 import com.liweiwen.voicenotes.data.ReminderManager
 import com.liweiwen.voicenotes.data.SummaryManager
+import com.liweiwen.voicenotes.data.ShareCardManager
+import com.liweiwen.voicenotes.data.ThemeScheduleManager
+import com.liweiwen.voicenotes.data.ThemeScheduleReceiver
 import com.liweiwen.voicenotes.widget.NotesWidgetProvider
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -276,6 +280,8 @@ private fun NoteScreenContent(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // 非 composable 函数（如导出分享卡）需要颜色时，在此 composable 作用域预先算好
+    val shareCardAccentHex = String.format("#%06X", 0xFFFFFF and (if (dark) AccentBright else Accent).toArgb())
     val systemClipboard = remember {
         context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     }
@@ -386,6 +392,16 @@ private fun NoteScreenContent(
     var hidePrivate by remember { mutableStateOf(settingsStore.hidePrivate) }
     var summaryModelInput by remember { mutableStateOf(settingsStore.summaryModel) }
     var privateRevealed by remember { mutableStateOf(false) }
+
+    // ===== v2.7 新功能状态 =====
+    var quickPhrasesInput by remember { mutableStateOf(settingsStore.quickPhrases) }
+    var showQuickPhrases by remember { mutableStateOf(false) }
+    var themeScheduleEnabled by remember { mutableStateOf(settingsStore.themeScheduleEnabled) }
+    var themeDarkHour by remember { mutableStateOf(settingsStore.themeDarkHour) }
+    var themeLightHour by remember { mutableStateOf(settingsStore.themeLightHour) }
+    var autoTagEnabled by remember { mutableStateOf(settingsStore.autoTagEnabled) }
+    var showWeekly by remember { mutableStateOf(false) }
+    var shareCardPath by remember { mutableStateOf("") }
     val appVersion = remember {
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "-" }
             .getOrDefault("-")
@@ -411,6 +427,8 @@ private fun NoteScreenContent(
                 formatRecordTime(note.time).contains(keyword, ignoreCase = true)
         }
     }
+    // v2.7：列表视图置顶优先（时间正序，界面反转后 newest 在底部）；时间轴仍按时间分组不置顶。
+    val listNotes = visibleNotes.sortedWith(compareByDescending<Note> { it.isPinned }.thenBy { it.time })
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -437,6 +455,18 @@ private fun NoteScreenContent(
         ReminderManager.ensureChannel(context)
         // v2.5 兜底：系统可能已清掉闹钟，按本机记录重建所有未到期提醒
         ReminderManager.rescheduleAll(context, noteStore.all())
+        // v2.7 兜底：按本机设置重建深色模式定时闹钟
+        ThemeScheduleManager.reschedule(context, settingsStore)
+    }
+
+    // v2.7 定时切换主题后， receiver 通过 AppBus 通知界面即时刷新（回到前台也读一次）
+    LaunchedEffect(Unit) {
+        AppBus.events.collect { event ->
+            if (event == AppBus.THEME_REFRESH) onThemeChange(settingsStore.theme)
+        }
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        if (settingsStore.themeScheduleEnabled) onThemeChange(settingsStore.theme)
     }
 
     /** 打开 App 或从后台回来时读取剪贴板，复制变化也实时跟进。 */
@@ -489,6 +519,13 @@ private fun NoteScreenContent(
         locationEnabled = settingsStore.locationEnabled
         lockEnabled = settingsStore.lockEnabled
         hidePrivate = settingsStore.hidePrivate
+        quickPhrasesInput = settingsStore.quickPhrases
+        themeScheduleEnabled = settingsStore.themeScheduleEnabled
+        themeDarkHour = settingsStore.themeDarkHour
+        themeLightHour = settingsStore.themeLightHour
+        autoTagEnabled = settingsStore.autoTagEnabled
+        onThemeChange(settingsStore.theme)
+        ThemeScheduleManager.reschedule(context, settingsStore)
     }
 
     // 备份：系统文件选择器负责选保存位置 / 选备份包，App 只读写选中的 URI
@@ -842,40 +879,73 @@ private fun NoteScreenContent(
         return if (base.length > 42) base.take(42) + "…" else base
     }
 
-    /** AI 摘要：有有效 Key 走百炼；没有 / 失败则本地兜底，并用弹窗明确呈现结果。 */
+    /** AI 摘要 + 自动标签（v2.7）：有有效 Key 走百炼，否则本机降级；结果用弹窗呈现。 */
     suspend fun summarizeNote(note: Note) {
         summarizingId = note.id
         val key = settingsStore.apiKey.trim()
-        // sk-test123 之类的占位 key 直接走本地，不发无效请求
-        val keyLooksReal = key.startsWith("sk-") && key.length > 20
-        var usedLocal = false
-        val result = if (!keyLooksReal) {
-            usedLocal = true
-            SummaryManager.Result.Success(localSummary(note.text))
-        } else {
-            SummaryManager.summarize(apiKey = key, model = settingsStore.summaryModel, text = note.text)
-        }
+        val richResult = SummaryManager.rich(
+            apiKey = key,
+            model = settingsStore.summaryModel,
+            text = note.text,
+            knownTags = noteStore.allTags(),
+        )
         summarizingId = null
-        when (result) {
-            is SummaryManager.Result.Success -> {
-                noteStore.setSummary(note.id, result.text)
+        when (richResult) {
+            is SummaryManager.Result2.Ok -> {
+                val rich = richResult.rich
+                noteStore.setSummary(note.id, rich.summary)
+                var tagNote = "（当前未填有效百炼 Key，用的是本机摘要；填真实 Key 可启用 AI 提炼）"
+                if (autoTagEnabled && rich.tags.isNotEmpty()) {
+                    noteStore.addTags(note.id, rich.tags)
+                    tagNote = "自动标签：${rich.tags.joinToString(" ") { "#$it" }}"
+                }
                 refreshNotes()
                 NotesWidgetProvider.refreshAll(context)
-                summaryDialog = if (usedLocal) {
-                    "✦ ${result.text}\n\n（本机摘要：当前未填写有效的百炼 API Key。" +
-                        "想要 AI 提炼要点，可到「设置」里填入真实 Key。）"
+                val keyReal = key.startsWith("sk-") && key.length > 20
+                summaryDialog = if (keyReal) {
+                    "✦ ${rich.summary}\n\n$tagNote"
                 } else {
-                    "✦ ${result.text}"
+                    "✦ ${rich.summary}\n\n（本机摘要）$tagNote"
                 }
             }
-            is SummaryManager.Result.Failure -> {
-                // 网络/服务失败也降级为本地摘要，保证用户点了就有结果
-                val fallback = localSummary(note.text)
-                noteStore.setSummary(note.id, fallback)
-                refreshNotes()
-                summaryDialog = "AI 摘要失败：${result.message}\n\n已改用本机摘要：\n✦ $fallback"
+            is SummaryManager.Result2.Err -> {
+                summaryDialog = richResult.message
             }
         }
+    }
+
+    /** v2.7：切换置顶。 */
+    fun togglePin(note: Note) {
+        val next = !note.isPinned
+        noteStore.setPinned(note.id, next)
+        refreshNotes()
+        Toast.makeText(context, if (next) "已置顶" else "已取消置顶", Toast.LENGTH_SHORT).show()
+    }
+
+    /** v2.7：切换待办完成。 */
+    fun toggleDone(note: Note) {
+        val next = !note.isDone
+        noteStore.setDone(note.id, next)
+        refreshNotes()
+        Toast.makeText(context, if (next) "已标记完成" else "已恢复未完成", Toast.LENGTH_SHORT).show()
+    }
+
+    /** v2.7：把单条记录导出成竖版图片卡片，写入「图片/随手说」。 */
+    fun exportShareCard(note: Note) {
+        val bitmap = runCatching {
+            ShareCardManager.render(context, note, shareCardAccentHex)
+        }.getOrNull()
+        if (bitmap == null) {
+            Toast.makeText(context, "生成图片失败", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val path = ShareCardManager.saveToGallery(context, bitmap, "随手说-${ExportManager.timestamp()}")
+        shareCardPath = path ?: "生成失败"
+        Toast.makeText(
+            context,
+            if (path != null) "图片已保存到 $path" else "保存失败，请检查存储权限",
+            Toast.LENGTH_LONG,
+        ).show()
     }
 
     /** 设置/取消提醒：先选日期再选时间，最后调度闹钟。 */
@@ -1258,6 +1328,10 @@ private fun NoteScreenContent(
                                 },
                             )
                             DropdownMenuItem(
+                                text = { Text("每周回顾") },
+                                onClick = { appMenuOpen = false; showWeekly = true },
+                            )
+                            DropdownMenuItem(
                                 text = { Text("回收站 · ${trashNotes.size}") },
                                 onClick = {
                                     appMenuOpen = false
@@ -1389,6 +1463,7 @@ private fun NoteScreenContent(
                             tagTarget = note
                             tagDraft = ""
                         },
+                        onToggleDone = { toggleDone(note) },
                         menu = {
                             NoteActionMenu(
                                 note = note,
@@ -1417,6 +1492,9 @@ private fun NoteScreenContent(
                                 onSummarize = { actionNote = null; scope.launch { summarizeNote(note) } },
                                 onPrivate = { actionNote = null; togglePrivate(note) },
                                 onLocation = { actionNote = null; tagLocation(note) },
+                                onPin = { actionNote = null; togglePin(note) },
+                                onTodo = { actionNote = null; toggleDone(note) },
+                                onShareCard = { actionNote = null; exportShareCard(note) },
                             )
                         },
                     )
@@ -1500,7 +1578,7 @@ private fun NoteScreenContent(
                         },
                     contentPadding = PaddingValues(top = 12.dp, bottom = 116.dp),
                 ) {
-                    items(visibleNotes.asReversed(), key = { it.id }) { note ->
+                    items(listNotes.asReversed(), key = { it.id }) { note ->
                         renderNote(note)
                     }
                     // 不置顶时：统计卡作为列表最后一项，reverseLayout 下显示在最顶端，随列表滚动
@@ -1767,6 +1845,23 @@ private fun NoteScreenContent(
                                     )
                                 }
                             }
+                        }
+                    }
+                    // v2.7：常用短语入口（有配置才显示），点开选一条插入草稿
+                    if (quickPhrasesInput.lines().map { it.trim() }.any { it.isNotBlank() }) {
+                        Spacer(Modifier.width(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(if (dark) Color(0x22FFFFFF) else Color(0x12000000))
+                                .clickable {
+                                    keyboardController?.hide()
+                                    showQuickPhrases = true
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(AppIcons.Phrase, contentDescription = "常用短语", tint = subColor, modifier = Modifier.size(20.dp))
                         }
                     }
                     if (draft.isNotBlank() || pendingAudio != null) {
@@ -2107,6 +2202,36 @@ private fun NoteScreenContent(
             summaryModelInput = summaryModelInput,
             onSummaryModelChange = { summaryModelInput = it },
             onOpenTextExport = { showTextExport = true; exportDone = "" },
+            // v2.7 新参数
+            quickPhrasesInput = quickPhrasesInput,
+            onQuickPhrasesChange = {
+                quickPhrasesInput = it
+                settingsStore.quickPhrases = it
+            },
+            themeScheduleEnabled = themeScheduleEnabled,
+            onThemeScheduleChange = {
+                themeScheduleEnabled = it
+                settingsStore.themeScheduleEnabled = it
+                ThemeScheduleManager.reschedule(context, settingsStore)
+                Toast.makeText(context, if (it) "已开启定时切换" else "已关闭定时切换", Toast.LENGTH_SHORT).show()
+            },
+            themeDarkHour = themeDarkHour,
+            onThemeDarkHourChange = {
+                themeDarkHour = it
+                settingsStore.themeDarkHour = it
+                ThemeScheduleManager.reschedule(context, settingsStore)
+            },
+            themeLightHour = themeLightHour,
+            onThemeLightHourChange = {
+                themeLightHour = it
+                settingsStore.themeLightHour = it
+                ThemeScheduleManager.reschedule(context, settingsStore)
+            },
+            autoTagEnabled = autoTagEnabled,
+            onAutoTagChange = {
+                autoTagEnabled = it
+                settingsStore.autoTagEnabled = it
+            },
         )
     }
 
@@ -2144,6 +2269,106 @@ private fun NoteScreenContent(
             title = { Text("摘要") },
             text = { Text(summaryDialog) },
             confirmButton = { TextButton(onClick = { summaryDialog = "" }) { Text("知道了") } },
+        )
+    }
+
+    // ===== v2.7 对话框组 =====
+    // 常用短语：点一条插入到草稿
+    if (showQuickPhrases) {
+        val phrases = quickPhrasesInput.lines().map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        AlertDialog(
+            onDismissRequest = { showQuickPhrases = false },
+            title = { Text("常用短语") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    if (phrases.isEmpty()) {
+                        Text("还没有短语，到「设置 → 常用短语」添加吧。", fontSize = 13.sp, color = subColor)
+                    } else {
+                        phrases.forEach { phrase ->
+                            TextButton(
+                                onClick = {
+                                    draft = if (draft.isBlank()) phrase else "$draft $phrase"
+                                    showQuickPhrases = false
+                                    textMode = true
+                                    // 不在此处 requestFocus：clipFocusRequester 只在打字模式的
+                                    // BasicTextField 上 attach，短语弹窗关闭瞬间字段尚未组合，
+                                    // 直接请求焦点会抛 IllegalStateException。
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(phrase, color = if (dark) AccentBright else Accent, modifier = Modifier.fillMaxWidth())
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showQuickPhrases = false }) { Text("关闭") } },
+        )
+    }
+
+    // 分享卡保存结果
+    if (shareCardPath.isNotBlank()) {
+        AlertDialog(
+            onDismissRequest = { shareCardPath = "" },
+            title = { Text("分享卡") },
+            text = { Text(if (shareCardPath == "生成失败") "生成图片失败，请重试。" else "图片已保存到：\n$shareCardPath\n\n可在系统相册/文件管理器里找到并分享。") },
+            confirmButton = { TextButton(onClick = { shareCardPath = "" }) { Text("知道了") } },
+        )
+    }
+
+    // 每周回顾：本周统计 + 标签分布可视化
+    if (showWeekly) {
+        val now = System.currentTimeMillis()
+        val weekMs = 7L * 24 * 60 * 60 * 1000
+        val weekNotes = notes.filter { it.time >= now - weekMs }
+        val voiceCount = weekNotes.count { it.hasAudio }
+        val doneCount = weekNotes.count { it.isDone }
+        val tagCounts = weekNotes.flatMap { it.tags }.groupingBy { it }.eachCount().toList().sortedByDescending { it.second }.take(6)
+        val maxTag = (tagCounts.firstOrNull()?.second ?: 1).coerceAtLeast(1)
+        AlertDialog(
+            onDismissRequest = { showWeekly = false },
+            title = { Text("每周回顾") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text("最近 7 天", fontSize = 12.sp, color = subColor)
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        StatItem("记录", "${weekNotes.size} 条", if (dark) AccentBright else Accent)
+                        StatItem("语音", "$voiceCount 段", if (dark) AccentBright else Accent)
+                        StatItem("完成", "$doneCount 项", if (dark) AccentBright else Accent)
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Text("标签分布", fontSize = 12.sp, color = subColor)
+                    Spacer(Modifier.height(8.dp))
+                    if (tagCounts.isEmpty()) {
+                        Text("本周还没有打标签的记录", fontSize = 12.sp, color = subColor)
+                    } else {
+                        tagCounts.forEach { (tag, count) ->
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 3.dp)) {
+                                Text("#$tag", fontSize = 12.sp, color = textColor, modifier = Modifier.width(72.dp))
+                                Box(
+                                    Modifier
+                                        .weight(1f)
+                                        .height(12.dp)
+                                        .clip(RoundedCornerShape(6))
+                                        .background(if (dark) Color(0x24FFFFFF) else Color(0x12000000)),
+                                ) {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth(count.toFloat() / maxTag)
+                                            .height(12.dp)
+                                            .clip(RoundedCornerShape(6))
+                                            .background(if (dark) AccentBright else Accent),
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Text("$count", fontSize = 11.sp, color = subColor)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showWeekly = false }) { Text("关闭") } },
         )
     }
 
@@ -2588,6 +2813,17 @@ private fun SettingsPage(
     summaryModelInput: String,
     onSummaryModelChange: (String) -> Unit,
     onOpenTextExport: () -> Unit,
+    // v2.7 新增
+    quickPhrasesInput: String,
+    onQuickPhrasesChange: (String) -> Unit,
+    themeScheduleEnabled: Boolean,
+    onThemeScheduleChange: (Boolean) -> Unit,
+    themeDarkHour: Int,
+    onThemeDarkHourChange: (Int) -> Unit,
+    themeLightHour: Int,
+    onThemeLightHourChange: (Int) -> Unit,
+    autoTagEnabled: Boolean,
+    onAutoTagChange: (Boolean) -> Unit,
 ) {
     val surface = if (dark) SurfaceDark else SurfaceLight
     val background = if (dark) BgDark else BgLight
@@ -2773,6 +3009,44 @@ private fun SettingsPage(
                         ),
                     )
                 }
+                Spacer(Modifier.height(14.dp))
+                // v2.7：深色模式定时切换
+                SettingsSwitchRow(
+                    title = "深色模式定时切换",
+                    desc = "到点自动切换深色/浅色，无需手动设置",
+                    checked = themeScheduleEnabled,
+                    dark = dark,
+                    onChange = onThemeScheduleChange,
+                )
+                if (themeScheduleEnabled) {
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                            Text("深色开始", fontSize = 12.sp, color = subColor)
+                            HourPicker(hour = themeDarkHour, dark = dark, onChange = onThemeDarkHourChange)
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                            Text("浅色开始", fontSize = 12.sp, color = subColor)
+                            HourPicker(hour = themeLightHour, dark = dark, onChange = onThemeLightHourChange)
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // v2.7：常用短语
+            SettingsSection(title = "常用短语") {
+                Text("每行一条，输入时长按或点输入栏右侧按钮可快速插入。", fontSize = 12.sp, color = subColor)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = quickPhrasesInput,
+                    onValueChange = onQuickPhrasesChange,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp),
+                    placeholder = { Text("例如：\n我在路上，稍后回复\n我家住在XXX\n收款码发我一下") },
+                    maxLines = 8,
+                )
             }
 
             Spacer(Modifier.height(12.dp))
@@ -2860,6 +3134,16 @@ private fun SettingsPage(
                             checked = locationEnabled,
                             dark = dark,
                             onChange = onLocationChange,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(if (dark) Color(0x24FFFFFF) else Color(0x14000000)))
+                        Spacer(Modifier.height(10.dp))
+                        SettingsSwitchRow(
+                            title = "摘要时自动打标签",
+                            desc = "生成摘要时顺带提炼 1-3 个标签（有真实 Key 走 AI，否则本机提取）",
+                            checked = autoTagEnabled,
+                            dark = dark,
+                            onChange = onAutoTagChange,
                         )
                     }
                 }
@@ -2961,6 +3245,29 @@ private fun SettingsPage(
             }
             Spacer(Modifier.height(24.dp))
         }
+    }
+}
+
+/** v2.7：小时选择器（- / +，范围 0-23）。 */
+@Composable
+private fun HourPicker(hour: Int, dark: Boolean, onChange: (Int) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
+        TextButton(
+            onClick = { onChange((hour + 23) % 24) },
+            contentPadding = PaddingValues(horizontal = 12.dp),
+        ) { Text("−", fontSize = 20.sp, color = if (dark) AccentBright else Accent) }
+        Text(
+            String.format("%02d:00", hour),
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (dark) Color(0xFFECECEC) else Color(0xFF222222),
+            modifier = Modifier.width(64.dp),
+            textAlign = TextAlign.Center,
+        )
+        TextButton(
+            onClick = { onChange((hour + 1) % 24) },
+            contentPadding = PaddingValues(horizontal = 12.dp),
+        ) { Text("+", fontSize = 20.sp, color = if (dark) AccentBright else Accent) }
     }
 }
 
@@ -3305,6 +3612,9 @@ private fun NoteActionMenu(
     onSummarize: () -> Unit = {},
     onPrivate: () -> Unit = {},
     onLocation: () -> Unit = {},
+    onPin: () -> Unit = {},
+    onTodo: () -> Unit = {},
+    onShareCard: () -> Unit = {},
 ) {
     val accent = if (dark) AccentBright else Accent
     val menuBg = if (dark) Color(0xFF243049) else Color(0xFFFFFFFF)
@@ -3353,6 +3663,10 @@ private fun NoteActionMenu(
         }
         MenuItem(AppIcons.Lock, if (note.isPrivate) "取消私密" else "私密", accent, onClick = onPrivate)
         MenuItem(AppIcons.LocationOn, "位置", accent, onClick = onLocation)
+        // v2.7 新操作：置顶 / 待办 / 分享卡
+        MenuItem(AppIcons.PushPin, if (note.isPinned) "取消置顶" else "置顶", accent, onClick = onPin)
+        MenuItem(AppIcons.CheckCircle, if (note.isDone) "标未完成" else "标完成", accent, onClick = onTodo)
+        MenuItem(AppIcons.Image, "分享卡", accent, onClick = onShareCard)
         MenuItem(AppIcons.SelectAll, "多选", accent, onClick = onMultiSelect)
         MenuItem(Icons.Default.Delete, "删除", danger, onClick = onDelete)
     }
@@ -3568,6 +3882,11 @@ private fun AboutPage(
                         AboutFeature(dark = dark, AppIcons.Headset, "耳机线控", "App 在前台时按一下耳机播放键即可开始/停止录音。")
                         AboutFeature(dark = dark, AppIcons.LocationOn, "地理标记", "长按记录选「位置」附上当前经纬度（需系统定位权限）。")
                         AboutFeature(dark = dark, AppIcons.GridView, "桌面小组件", "长按桌面添加「随手说」小组件，一键录音、查看最近两条记录。")
+                        AboutFeature(dark = dark, AppIcons.PushPin, "置顶与待办", "长按记录选「置顶」固定在顶部；选「标完成」当待办，点气泡时间旁的勾选圈可切换完成。")
+                        AboutFeature(dark = dark, AppIcons.Phrase, "常用短语", "设置里填写常用短语，输入栏右侧点短语按钮一键插入，打字更快。")
+                        AboutFeature(dark = dark, AppIcons.Image, "分享卡片", "长按记录选「分享卡」，生成竖版图片存到 图片/随手说，可直接发微信。")
+                        AboutFeature(dark = dark, AppIcons.Schedule, "深色定时", "设置里开启深色模式定时切换，到点自动换深色/浅色。")
+                        AboutFeature(dark = dark, AppIcons.Chart, "每周回顾", "菜单里点「每周回顾」，看最近 7 天记录数、语音数、完成数与标签分布图。")
                     }
                 }
             }
